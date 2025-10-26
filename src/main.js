@@ -61,6 +61,61 @@ function generateCategoryVariants(category) {
     return Array.from(variants);
 }
 
+// Try to resolve a best-fit category for TheMuse API by probing the API and available categories
+async function tryResolveCategory(preferredCategory, proxyConf, userAgent) {
+    if (!preferredCategory) return null;
+    const candidates = generateCategoryVariants(preferredCategory);
+    // Try candidates directly first (sequentially) to find one that returns jobs
+    for (const c of candidates) {
+        try {
+            const url = new URL(API_BASE_URL);
+            url.searchParams.set('category', c);
+            url.searchParams.set('page', '1');
+            const res = await fetch(url.href, { headers: { 'user-agent': userAgent, 'accept': 'application/json' } });
+            if (!res.ok) continue;
+            const data = await res.json();
+            if (data && Array.isArray(data.results) && data.results.length > 0) {
+                return c;
+            }
+        } catch (e) {
+            // ignore transient errors and try next candidate
+        }
+    }
+
+    // If direct candidates didn't match, probe a sample of jobs without category to learn available categories
+    try {
+        const sampleUrl = new URL(API_BASE_URL);
+        sampleUrl.searchParams.set('page', '1');
+        const res = await fetch(sampleUrl.href, { headers: { 'user-agent': userAgent, 'accept': 'application/json' } });
+        if (res.ok) {
+            const data = await res.json();
+            const available = new Set();
+            if (data && Array.isArray(data.results)) {
+                for (const job of data.results) {
+                    if (job.categories && Array.isArray(job.categories)) {
+                        for (const cat of job.categories) {
+                            if (cat && cat.name) available.add(cat.name);
+                        }
+                    }
+                }
+            }
+            const normalizedPreferred = ('' + preferredCategory).toLowerCase().replace(/[^a-z0-9]+/g, '');
+            for (const av of Array.from(available)) {
+                const norm = ('' + av).toLowerCase().replace(/[^a-z0-9]+/g, '');
+                if (norm === normalizedPreferred) return av; // exact normalized match
+            }
+            // try fuzzy contains
+            for (const av of Array.from(available)) {
+                if (av.toLowerCase().includes(preferredCategory.toLowerCase())) return av;
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+
+    return null;
+}
+
 // Early startup log so container shows activity immediately
 console.log('Starting TheMuse actor - initializing...');
 try {
@@ -89,7 +144,16 @@ async function main() {
         }
 
         const input = {
-            category: process.env.CATEGORY || cli.category || actorInput.category || 'Software Engineering',
+            // HTML listing options
+            startUrl: process.env.START_URL || cli.startUrl || actorInput.startUrl || undefined,
+            startUrls: actorInput.startUrls || (cli.startUrls ? (Array.isArray(cli.startUrls) ? cli.startUrls : String(cli.startUrls).split(',')) : undefined),
+            keyword: process.env.KEYWORD || cli.keyword || actorInput.keyword,
+            location: process.env.LOCATION || cli.location || actorInput.location,
+            datePosted: process.env.DATE_POSTED || cli.datePosted || actorInput.datePosted,
+            // API options
+            category: process.env.CATEGORY || cli.category || actorInput.category || '',
+            // common options
+            collectDetails: (process.env.COLLECT_DETAILS || typeof cli.collectDetails !== 'undefined' ? (process.env.COLLECT_DETAILS === 'true' || cli.collectDetails === 'true' || cli.collectDetails === true) : (typeof actorInput.collectDetails === 'boolean' ? actorInput.collectDetails : true)),
             maxItems: Number(process.env.MAX_ITEMS || cli.maxItems || actorInput.maxItems || 200),
             maxPages: Number(process.env.MAX_PAGES || cli.maxPages || actorInput.maxPages || 0), // 0 = unlimited until empty
             userAgent: process.env.USER_AGENT || cli.userAgent || actorInput.userAgent,
@@ -98,6 +162,9 @@ async function main() {
             concurrency: Number(process.env.CONCURRENCY || cli.concurrency || actorInput.concurrency || 2),
             proxyConfiguration: actorInput.proxyConfiguration || undefined,
             htmlFallback: (process.env.HTML_FALLBACK || cli.htmlFallback || actorInput.htmlFallback) || false,
+            dedupe: (typeof actorInput.dedupe !== 'undefined' ? actorInput.dedupe : (typeof cli.dedupe !== 'undefined' ? cli.dedupe : true)),
+            cookies: process.env.COOKIES || cli.cookies || actorInput.cookies,
+            cookiesJson: process.env.COOKIES_JSON || cli.cookiesJson || actorInput.cookiesJson,
         };
 
         // Provide simple CLI help and dry-run
@@ -120,6 +187,7 @@ async function main() {
 
         let itemCount = 0;
         let totalRequests = 0;
+    const seenUrls = input.dedupe ? new Set() : null;
 
         log.info('Starting TheMuse API crawler', { category: input.category, maxItems: input.maxItems, concurrency: input.concurrency });
 
@@ -260,7 +328,12 @@ async function main() {
         });
 
         // Check for explicit start URLs (from Actor input, CLI or env). If provided, run an HTML CheerioCrawler
-        const rawStartUrls = actorInput.startUrls || cli.startUrls || process.env.START_URLS || null;
+        let rawStartUrls = actorInput.startUrls || cli.startUrls || process.env.START_URLS || null;
+        // also support single startUrl
+        if (!rawStartUrls && actorInput.startUrl) {
+            // actorInput.startUrl may be string
+            rawStartUrls = actorInput.startUrl;
+        }
         let explicitStartUrls = [];
         if (rawStartUrls) {
             if (Array.isArray(rawStartUrls)) explicitStartUrls = rawStartUrls;
@@ -272,6 +345,101 @@ async function main() {
 
         if (explicitStartUrls.length > 0) {
             log.info('Start URLs provided; running CheerioCrawler on explicit URLs', { count: explicitStartUrls.length });
+            // Prepare cookies header if provided
+            let cookieHeader = null;
+            if (input.cookies) cookieHeader = input.cookies;
+            else if (input.cookiesJson) {
+                try {
+                    const cj = JSON.parse(input.cookiesJson);
+                    if (Array.isArray(cj)) {
+                        cookieHeader = cj.map(c => `${c.name}=${c.value}`).join('; ');
+                    } else if (typeof cj === 'object') {
+                        cookieHeader = Object.entries(cj).map(([k, v]) => `${k}=${v}`).join('; ');
+                    }
+                } catch (e) {
+                    log.warning('cookiesJson could not be parsed as JSON; ignoring', { err: e.message });
+                }
+            }
+
+            // If collectDetails is enabled, create a detail crawler to fetch job pages
+            let detailCrawler = null;
+            if (input.collectDetails) {
+                detailCrawler = new CheerioCrawler({
+                    proxyConfiguration: proxyConf,
+                    maxConcurrency: Math.max(1, Math.floor(input.concurrency / 2)),
+                    requestHandlerTimeoutSecs: 60,
+                    async requestHandler({ request, $, log: dLog }) {
+                        try {
+                            // Try JSON-LD on detail page first
+                            const scriptEls = $('script[type="application/ld+json"]').toArray();
+                            let pushed = false;
+                            for (const el of scriptEls) {
+                                try {
+                                    const json = JSON.parse($(el).text());
+                                    const items = Array.isArray(json) ? json : [json];
+                                    for (const it of items) {
+                                        if (!it) continue;
+                                        if (it['@type'] === 'JobPosting' || (it['@type'] && it['@type'].toLowerCase().includes('job'))) {
+                                            const out = {
+                                                id: it.identifier || it.url || request.url,
+                                                title: it.title || it.name || $('h1').first().text().trim() || null,
+                                                company: it.hiringOrganization && (it.hiringOrganization.name || null) || null,
+                                                location: Array.isArray(it.jobLocation) ? it.jobLocation.map(l => l.address && l.address.addressLocality).filter(Boolean).join(', ') : (it.jobLocation && it.jobLocation.address && it.jobLocation.address.addressLocality) || null,
+                                                date_posted: it.datePosted || it.postedAt || null,
+                                                job_type: it.employmentType || null,
+                                                job_category: null,
+                                                job_url: it.url || it.sameAs || request.url,
+                                                url: it.url || it.sameAs || request.url,
+                                                description_html: it.description || $('article').html() || null,
+                                                raw: it
+                                            };
+                                            if (!seenUrls || !seenUrls.has(out.url)) {
+                                                await Dataset.pushData(out);
+                                                if (seenUrls) seenUrls.add(out.url);
+                                            }
+                                            pushed = true;
+                                            itemCount++;
+                                            if (input.maxItems > 0 && itemCount >= input.maxItems) return;
+                                        }
+                                    }
+                                } catch (e) {
+                                    // ignore parse errors of json-ld
+                                }
+                            }
+
+                            if (!pushed) {
+                                // fallback parsing
+                                const out = {
+                                    id: request.url,
+                                    title: $('h1').first().text().trim() || null,
+                                    company: $('meta[name="author"]').attr('content') || null,
+                                    location: null,
+                                    date_posted: null,
+                                    job_type: null,
+                                    job_category: null,
+                                    job_url: request.url,
+                                    url: request.url,
+                                    description_html: $('article').html() || $('body').text().slice(0, 2000) || null,
+                                    raw: null
+                                };
+                                if (!seenUrls || !seenUrls.has(out.url)) {
+                                    await Dataset.pushData(out);
+                                    if (seenUrls) seenUrls.add(out.url);
+                                }
+                                itemCount++;
+                            }
+                        } catch (e) {
+                            dLog.error('Detail page parse failed', { url: request.url, error: e.message });
+                        }
+                    },
+                    prepareRequestFunction: ({ request }) => {
+                        request.headers = request.headers || {};
+                        request.headers['user-agent'] = userAgent;
+                        if (cookieHeader) request.headers['cookie'] = cookieHeader;
+                        return request;
+                    }
+                });
+            }
 
             const cheerioListingCrawler = new CheerioCrawler({
                 proxyConfiguration: proxyConf,
@@ -344,24 +512,30 @@ async function main() {
                             try {
                                 const abs = new URL(a.href, request.loadedUrl || request.url).href;
                                 // Avoid duplicates
-                                if (pushed.has(abs)) continue;
-                                // Push minimal record; more details can be fetched later if desired
-                                const out = {
-                                    id: abs,
-                                    title: a.text || null,
-                                    company: null,
-                                    location: null,
-                                    date_posted: null,
-                                    job_type: null,
-                                    job_category: null,
-                                    job_url: abs,
-                                    url: abs,
-                                    description_html: null,
-                                    raw: null
-                                };
-                                await Dataset.pushData(out);
-                                pushed.add(abs);
-                                itemCount++;
+                                if (seenUrls && seenUrls.has(abs)) continue;
+                                if (input.collectDetails && detailCrawler) {
+                                    // enqueue detail request
+                                    await detailCrawler.addRequests([{ url: abs }]);
+                                } else {
+                                    const out = {
+                                        id: abs,
+                                        title: a.text || null,
+                                        company: null,
+                                        location: null,
+                                        date_posted: null,
+                                        job_type: null,
+                                        job_category: null,
+                                        job_url: abs,
+                                        url: abs,
+                                        description_html: null,
+                                        raw: null
+                                    };
+                                    if (!seenUrls || !seenUrls.has(out.url)) {
+                                        await Dataset.pushData(out);
+                                        if (seenUrls) seenUrls.add(out.url);
+                                    }
+                                    itemCount++;
+                                }
                             } catch (e) {
                                 // ignore malformed urls
                             }
@@ -412,6 +586,7 @@ async function main() {
                     request.headers['sec-ch-ua'] = ch['sec-ch-ua'];
                     request.headers['sec-ch-ua-mobile'] = ch['sec-ch-ua-mobile'];
                     request.headers['sec-ch-ua-platform'] = ch['sec-ch-ua-platform'];
+                    if (cookieHeader) request.headers['cookie'] = cookieHeader;
                     return request;
                 }
             });
@@ -424,14 +599,31 @@ async function main() {
             return;
         }
 
-        // Build start URLs using category variants to handle case/casing differences
-        const variants = generateCategoryVariants(input.category || '');
+        // Resolve category robustly: try direct candidates and sample API categories to find a best-fit
+        let resolvedCategory = null;
+        try {
+            resolvedCategory = await tryResolveCategory(input.category, proxyConf, userAgent);
+            if (resolvedCategory) log.info('Resolved category for API', { requested: input.category, resolved: resolvedCategory });
+            else log.warning('Could not resolve exact category; will attempt variant runs', { requested: input.category });
+        } catch (e) {
+            log.debug('Category resolution failed', { error: e && e.message });
+        }
+
         const startRequests = [];
-        for (const v of variants) {
+        if (resolvedCategory) {
             const u = new URL(API_BASE_URL);
-            u.searchParams.set('category', v);
+            u.searchParams.set('category', resolvedCategory);
             u.searchParams.set('page', '1');
-            startRequests.push({ url: u.href, userData: { variant: v } });
+            startRequests.push({ url: u.href, userData: { variant: resolvedCategory } });
+        } else {
+            // Build start URLs using category variants to handle case/casing differences
+            const variants = generateCategoryVariants(input.category || '');
+            for (const v of variants) {
+                const u = new URL(API_BASE_URL);
+                u.searchParams.set('category', v);
+                u.searchParams.set('page', '1');
+                startRequests.push({ url: u.href, userData: { variant: v } });
+            }
         }
 
         // Run the HTTP crawler

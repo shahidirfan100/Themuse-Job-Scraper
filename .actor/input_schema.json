@@ -4,12 +4,29 @@
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "category": {
-      "title": "Job category",
+    "startUrl": {
+      "title": "Start URL",
       "type": "string",
-      "description": "The Muse job category to scrape (e.g., 'Software Engineering', 'Account Management').",
-      "editor": "textfield",
-      "default": "Software Engineering"
+      "description": "Optional: start from a specific TheMuse listing URL (e.g. https://www.themuse.com/search/keyword/admin/date-posted/last_7d). If provided, keyword/location are ignored.",
+      "editor": "textfield"
+    },
+    "keyword": {
+      "title": "Keyword (if not using Start URL)",
+      "type": "string",
+      "description": "Search keyword, e.g., 'admin', 'developer'.",
+      "editor": "textfield"
+    },
+    "location": {
+      "title": "Location (optional)",
+      "type": "string",
+      "description": "Optional location filter used when constructing a search URL.",
+      "editor": "textfield"
+    },
+    "datePosted": {
+      "title": "Date posted filter",
+      "type": "string",
+      "description": "Optional date filter segment used in TheMuse listing URLs. Examples: 'last_7d', 'last_30d'. Leave empty for no filter.",
+      "editor": "textfield"
     },
     "maxItems": {
       "title": "Maximum number of jobs",
@@ -27,17 +44,23 @@
       "default": 0,
       "editor": "number"
     },
-    "userAgent": {
-      "title": "User-Agent",
+    "collectDetails": {
+      "title": "Collect job details",
+      "type": "boolean",
+      "description": "If enabled, the actor will fetch job detail pages to extract full description and metadata.",
+      "default": true
+    },
+    "cookies": {
+      "title": "Custom cookies (raw header)",
       "type": "string",
-      "description": "Optional: override the default user-agent string.",
+      "description": "Optional raw 'Cookie' header string to send with requests.",
       "editor": "textfield"
     },
-    "htmlFallback": {
-      "title": "HTML fallback",
-      "type": "boolean",
-      "description": "If true, the actor will try a Cheerio-based HTML parse when the API returns no results.",
-      "default": false
+    "cookiesJson": {
+      "title": "Custom cookies (JSON)",
+      "type": "string",
+      "description": "Optional JSON-formatted cookies. Accepts an array or object map.",
+      "editor": "textarea"
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",
