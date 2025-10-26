@@ -1,0 +1,13 @@
+{
+  "actorSpecification": 1,
+  "name": "themuse-jobs-scraper",
+  "version": "1.0.1",
+  "buildTag": "1.0.1",
+  "dockerfile": "./Dockerfile",
+  "readme": "../README.md",
+  "input": "./input_schema.json",
+  "nodeJsVersion": "22",
+  "storages": {
+    "dataset": "./dataset_schema.json"
+  }
+}

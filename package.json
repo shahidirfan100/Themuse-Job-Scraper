@@ -1,0 +1,15 @@
+{
+  "name": "themuse-jobs-actor",
+  "version": "2.0.0",
+  "description": "Efficient TheMuse.com jobs scraper using their public JSON API and Crawlee.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "dependencies": {
+    "apify": "^3.4.5",
+    "crawlee": "^3.14.1",
+    "cheerio": "^1.0.0-rc.12",
+    "got-scraping": "^4.0.3"
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "title": "TheMuse.com Jobs Scraper",
+  "description": "Scrapes jobs from TheMuse.com via the public API. Configure category, paging, and polite crawling options.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "category": {
+      "title": "Job category",
+      "type": "string",
+      "description": "The Muse job category to scrape (e.g., 'Software Engineering', 'Account Management').",
+      "editor": "textfield",
+      "default": "Software Engineering"
+    },
+    "maxItems": {
+      "title": "Maximum number of jobs",
+      "type": "integer",
+      "description": "The maximum number of jobs to collect. Set to 0 to collect all available jobs.",
+      "minimum": 0,
+      "default": 200,
+      "editor": "number"
+    },
+    "maxPages": {
+      "title": "Maximum number of pages",
+      "type": "integer",
+      "description": "Maximum pages to paginate. Set to 0 to paginate until empty.",
+      "minimum": 0,
+      "default": 0,
+      "editor": "number"
+    },
+    "concurrency": {
+      "title": "Concurrency",
+      "type": "integer",
+      "description": "Number of concurrent requests. Lower values are safer (default 2).",
+      "minimum": 1,
+      "default": 2,
+      "editor": "number"
+    },
+    "minDelayMs": {
+      "title": "Minimum delay (ms)",
+      "type": "integer",
+      "description": "Minimum polite delay in milliseconds between requests (jitter applied).",
+      "default": 300,
+      "editor": "number"
+    },
+    "maxDelayMs": {
+      "title": "Maximum delay (ms)",
+      "type": "integer",
+      "description": "Maximum polite delay in milliseconds between requests (jitter applied).",
+      "default": 700,
+      "editor": "number"
+    },
+    "userAgent": {
+      "title": "User-Agent",
+      "type": "string",
+      "description": "Optional: override the default user-agent string.",
+      "editor": "textfield"
+    },
+    "htmlFallback": {
+      "title": "HTML fallback",
+      "type": "boolean",
+      "description": "If true, the actor will try a Cheerio-based HTML parse when the API returns no results.",
+      "default": false
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Apify proxy configuration object.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
