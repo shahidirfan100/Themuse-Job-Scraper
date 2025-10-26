@@ -259,6 +259,171 @@ async function main() {
             },
         });
 
+        // Check for explicit start URLs (from Actor input, CLI or env). If provided, run an HTML CheerioCrawler
+        const rawStartUrls = actorInput.startUrls || cli.startUrls || process.env.START_URLS || null;
+        let explicitStartUrls = [];
+        if (rawStartUrls) {
+            if (Array.isArray(rawStartUrls)) explicitStartUrls = rawStartUrls;
+            else if (typeof rawStartUrls === 'string') {
+                // allow comma-separated list
+                explicitStartUrls = rawStartUrls.split(',').map(s => s.trim()).filter(Boolean);
+            }
+        }
+
+        if (explicitStartUrls.length > 0) {
+            log.info('Start URLs provided; running CheerioCrawler on explicit URLs', { count: explicitStartUrls.length });
+
+            const cheerioListingCrawler = new CheerioCrawler({
+                proxyConfiguration: proxyConf,
+                maxConcurrency: Math.max(1, Math.floor(input.concurrency)),
+                requestHandlerTimeoutSecs: 90,
+                async requestHandler({ request, $, response, log: cLog, session }) {
+                    // Respect item limit
+                    if (input.maxItems > 0 && itemCount >= input.maxItems) return;
+
+                    cLog.info('Processing HTML listing', { url: request.url });
+
+                    // Try JSON-LD first
+                    const pushed = new Set();
+                    try {
+                        const scriptEls = $('script[type="application/ld+json"]').toArray();
+                        for (const el of scriptEls) {
+                            if (input.maxItems > 0 && itemCount >= input.maxItems) break;
+                            try {
+                                const json = JSON.parse($(el).text());
+                                const items = Array.isArray(json) ? json : [json];
+                                for (const it of items) {
+                                    if (!it) continue;
+                                    if (it['@type'] === 'JobPosting' || (it['@type'] && it['@type'].toLowerCase().includes('job'))) {
+                                        const out = {
+                                            id: it.identifier || it.url || null,
+                                            title: it.title || it.name || null,
+                                            company: it.hiringOrganization && (it.hiringOrganization.name || it.hiringOrganization['@id']) || null,
+                                            location: Array.isArray(it.jobLocation) ? it.jobLocation.map(l => l.address && l.address.addressLocality).filter(Boolean).join(', ') : (it.jobLocation && it.jobLocation.address && it.jobLocation.address.addressLocality) || null,
+                                            date_posted: it.datePosted || it.postedAt || null,
+                                            job_type: it.employmentType || null,
+                                            job_category: null,
+                                            job_url: it.url || it.sameAs || request.url,
+                                            url: it.url || it.sameAs || request.url,
+                                            description_html: it.description || null,
+                                            raw: it
+                                        };
+                                        const key = out.job_url || out.id || out.title;
+                                        if (!pushed.has(key)) {
+                                            await Dataset.pushData(out);
+                                            pushed.add(key);
+                                            itemCount++;
+                                            if (input.maxItems > 0 && itemCount >= input.maxItems) break;
+                                        }
+                                    }
+                                }
+                            } catch (e) {
+                                // ignore malformed json-ld blocks
+                            }
+                        }
+                    } catch (e) {
+                        cLog.debug('Error while parsing JSON-LD', { error: e.message });
+                    }
+
+                    // If JSON-LD produced results, we may still want to look for links to job detail pages
+                    // Generic anchor-based extraction as fallback
+                    if (input.maxItems === 0 || itemCount < input.maxItems) {
+                        const anchors = [];
+                        $('a[href]').each((i, el) => {
+                            if (input.maxItems > 0 && itemCount >= input.maxItems) return;
+                            const href = $(el).attr('href');
+                            if (!href) return;
+                            // candidate job links
+                            if (/\/jobs?\//i.test(href) || /\/job\//i.test(href) || /themuse\.com\/jobs\//i.test(href)) {
+                                anchors.push({ href: href, text: $(el).text().trim() });
+                            }
+                        });
+
+                        for (const a of anchors) {
+                            if (input.maxItems > 0 && itemCount >= input.maxItems) break;
+                            try {
+                                const abs = new URL(a.href, request.loadedUrl || request.url).href;
+                                // Avoid duplicates
+                                if (pushed.has(abs)) continue;
+                                // Push minimal record; more details can be fetched later if desired
+                                const out = {
+                                    id: abs,
+                                    title: a.text || null,
+                                    company: null,
+                                    location: null,
+                                    date_posted: null,
+                                    job_type: null,
+                                    job_category: null,
+                                    job_url: abs,
+                                    url: abs,
+                                    description_html: null,
+                                    raw: null
+                                };
+                                await Dataset.pushData(out);
+                                pushed.add(abs);
+                                itemCount++;
+                            } catch (e) {
+                                // ignore malformed urls
+                            }
+                        }
+                    }
+
+                    // Pagination: try rel=next, .next, aria-label next
+                    if ((input.maxPages === 0 || (request.userData && (request.userData.page || 1) < input.maxPages)) && (input.maxItems === 0 || itemCount < input.maxItems)) {
+                        let nextHref = null;
+                        try {
+                            const relNext = $('a[rel="next"]').attr('href');
+                            if (relNext) nextHref = relNext;
+                            if (!nextHref) {
+                                const selNext = $('a.next, a[aria-label*="Next"], a[title*="Next"]').first().attr('href');
+                                if (selNext) nextHref = selNext;
+                            }
+                        } catch (e) {
+                            // ignore
+                        }
+
+                        if (nextHref) {
+                            try {
+                                const absNext = new URL(nextHref, request.loadedUrl || request.url).href;
+                                await cheerioListingCrawler.addRequests([{ url: absNext, userData: { page: (request.userData && request.userData.page ? request.userData.page + 1 : 2) } }]);
+                            } catch (e) {
+                                // ignore
+                            }
+                        } else {
+                            // As a fallback, if URL contains page=N, increment it
+                            try {
+                                const cur = new URL(request.url);
+                                const curPage = Number(cur.searchParams.get('page')) || 1;
+                                if (input.maxPages === 0 || curPage < input.maxPages) {
+                                    cur.searchParams.set('page', String(curPage + 1));
+                                    await cheerioListingCrawler.addRequests([{ url: cur.href, userData: { page: curPage + 1 } }]);
+                                }
+                            } catch (e) {
+                                // ignore
+                            }
+                        }
+                    }
+                },
+                prepareRequestFunction: ({ request, session }) => {
+                    request.headers = request.headers || {};
+                    request.headers['user-agent'] = userAgent;
+                    request.headers['accept-language'] = 'en-US,en;q=0.9';
+                    const ch = buildClientHintsFromUA(userAgent);
+                    request.headers['sec-ch-ua'] = ch['sec-ch-ua'];
+                    request.headers['sec-ch-ua-mobile'] = ch['sec-ch-ua-mobile'];
+                    request.headers['sec-ch-ua-platform'] = ch['sec-ch-ua-platform'];
+                    return request;
+                }
+            });
+
+            const startRequests = explicitStartUrls.map(u => ({ url: u }));
+            await cheerioListingCrawler.run(startRequests);
+            log.info('Finished explicit HTML crawl', { saved: itemCount });
+            // done
+            await Actor.exit();
+            return;
+        }
+
         // Build start URLs using category variants to handle case/casing differences
         const variants = generateCategoryVariants(input.category || '');
         const startRequests = [];
