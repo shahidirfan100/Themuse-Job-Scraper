@@ -27,28 +27,6 @@
       "default": 0,
       "editor": "number"
     },
-    "concurrency": {
-      "title": "Concurrency",
-      "type": "integer",
-      "description": "Number of concurrent requests. Lower values are safer (default 2).",
-      "minimum": 1,
-      "default": 2,
-      "editor": "number"
-    },
-    "minDelayMs": {
-      "title": "Minimum delay (ms)",
-      "type": "integer",
-      "description": "Minimum polite delay in milliseconds between requests (jitter applied).",
-      "default": 300,
-      "editor": "number"
-    },
-    "maxDelayMs": {
-      "title": "Maximum delay (ms)",
-      "type": "integer",
-      "description": "Maximum polite delay in milliseconds between requests (jitter applied).",
-      "default": 700,
-      "editor": "number"
-    },
     "userAgent": {
       "title": "User-Agent",
       "type": "string",

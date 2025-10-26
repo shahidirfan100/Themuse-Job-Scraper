@@ -61,7 +61,16 @@ function generateCategoryVariants(category) {
     return Array.from(variants);
 }
 
-await Actor.init();
+// Early startup log so container shows activity immediately
+console.log('Starting TheMuse actor - initializing...');
+try {
+    await Actor.init();
+} catch (e) {
+    console.error('Actor.init() failed to initialize:', e && e.message ? e.message : e);
+    // Give the error a moment to flush to logs before exiting
+    try { await sleep(250); } catch (err) {}
+    process.exit(1);
+}
 
 async function main() {
     try {
