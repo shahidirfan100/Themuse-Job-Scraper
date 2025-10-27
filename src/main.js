@@ -181,17 +181,29 @@ async function main() {
         const userAgent = pickUserAgent(input.userAgent);
         const proxyConf = input.proxyConfiguration ? await Actor.createProxyConfiguration({ ...input.proxyConfiguration }) : undefined;
 
+        // Hardcoded stealth settings for optimal anti-blocking
+        const CONCURRENCY = 2;
+        const MIN_DELAY_MS = 300;
+        const MAX_DELAY_MS = 700;
+
         let itemCount = 0;
         let totalRequests = 0;
-    const seenUrls = input.dedupe ? new Set() : null;
+        const seenUrls = input.dedupe ? new Set() : null;
 
-        log.info('Starting TheMuse API crawler', { category: input.category, maxItems: input.maxItems, concurrency: input.concurrency });
+        log.info('Starting TheMuse scraper', { 
+            category: input.category, 
+            keyword: input.keyword,
+            startUrl: input.startUrl,
+            maxItems: input.maxItems, 
+            maxPages: input.maxPages,
+            collectDetails: input.collectDetails
+        });
 
         const httpCrawler = new HttpCrawler({
             proxyConfiguration: proxyConf,
             maxRequestRetries: 6,
             useSessionPool: true,
-            maxConcurrency: input.concurrency,
+            maxConcurrency: CONCURRENCY,
             requestHandlerTimeoutSecs: 90,
             async requestHandler({ request, response, body, enqueueLinks, log: crawlerLog, session, responseBody }) {
                 // Respect item limit (treat maxItems === 0 as unlimited)
@@ -201,7 +213,7 @@ async function main() {
                 }
 
                 // polite delay with jitter + human-like reading time + simulated network latency
-                const baseDelay = randomInt(input.minDelayMs, input.maxDelayMs);
+                const baseDelay = randomInt(MIN_DELAY_MS, MAX_DELAY_MS);
                 const networkLatency = randomInt(20, 180); // simulate small network latency
 
                 totalRequests++;
@@ -374,7 +386,7 @@ async function main() {
             if (input.collectDetails) {
                 detailCrawler = new CheerioCrawler({
                     proxyConfiguration: proxyConf,
-                    maxConcurrency: Math.max(1, Math.floor(input.concurrency / 2)),
+                    maxConcurrency: 1, // Lower for detail pages
                     requestHandlerTimeoutSecs: 60,
                     async requestHandler({ request, $, log: dLog }) {
                         try {
@@ -451,7 +463,7 @@ async function main() {
 
             const cheerioListingCrawler = new CheerioCrawler({
                 proxyConfiguration: proxyConf,
-                maxConcurrency: Math.max(1, Math.floor(input.concurrency)),
+                maxConcurrency: CONCURRENCY,
                 requestHandlerTimeoutSecs: 90,
                 async requestHandler({ request, $, response, log: cLog, session }) {
                     // Respect item limit
@@ -616,12 +628,14 @@ async function main() {
 
         // Resolve category robustly: try direct candidates and sample API categories to find a best-fit
         let resolvedCategory = null;
-        try {
-            resolvedCategory = await tryResolveCategory(input.category, proxyConf, userAgent);
-            if (resolvedCategory) log.info('Resolved category for API', { requested: input.category, resolved: resolvedCategory });
-            else log.warning('Could not resolve exact category; will attempt variant runs', { requested: input.category });
-        } catch (e) {
-            log.debug('Category resolution failed', { error: e && e.message });
+        if (input.category && input.category.trim()) {
+            try {
+                resolvedCategory = await tryResolveCategory(input.category, proxyConf, userAgent);
+                if (resolvedCategory) log.info('Resolved category for API', { requested: input.category, resolved: resolvedCategory });
+                else log.warning('Could not resolve exact category; will attempt variant runs', { requested: input.category });
+            } catch (e) {
+                log.debug('Category resolution failed', { error: e && e.message });
+            }
         }
 
         const startRequests = [];
@@ -630,26 +644,36 @@ async function main() {
             u.searchParams.set('category', resolvedCategory);
             u.searchParams.set('page', '1');
             startRequests.push({ url: u.href, userData: { variant: resolvedCategory } });
-        } else {
+        } else if (input.category && input.category.trim()) {
             // Build start URLs using category variants to handle case/casing differences
-            const variants = generateCategoryVariants(input.category || '');
+            const variants = generateCategoryVariants(input.category);
             for (const v of variants) {
                 const u = new URL(API_BASE_URL);
                 u.searchParams.set('category', v);
                 u.searchParams.set('page', '1');
                 startRequests.push({ url: u.href, userData: { variant: v } });
             }
+        } else {
+            // No category provided, fetch recent jobs without filter
+            log.info('No category specified, fetching recent jobs from API');
+            const u = new URL(API_BASE_URL);
+            u.searchParams.set('page', '1');
+            startRequests.push({ url: u.href, userData: { variant: 'all' } });
         }
 
-        // Run the HTTP crawler
-        await httpCrawler.run(startRequests);
+        // Run the HTTP crawler only if we have requests
+        if (startRequests.length > 0) {
+            await httpCrawler.run(startRequests);
+        } else {
+            log.warning('No start requests generated, nothing to scrape');
+        }
 
         // If no items saved and htmlFallback requested, try CheerioCrawler on the HTML pages as fallback
         if (itemCount === 0 && input.htmlFallback) {
             log.info('No items from API; attempting HTML fallback using CheerioCrawler');
             const cheerioCrawler = new CheerioCrawler({
                 proxyConfiguration: proxyConf,
-                maxConcurrency: Math.max(1, Math.floor(input.concurrency / 2)),
+                maxConcurrency: 1,
                 requestHandlerTimeoutSecs: 60,
                 async requestHandler({ request, $, log: cLog }) {
                     // Basic heuristic parsing: look for anchors linking to job landing pages
