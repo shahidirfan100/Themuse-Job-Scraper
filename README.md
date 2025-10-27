@@ -1,29 +1,13 @@
 # TheMuse Job Scraper (Apify + Crawlee)
 
-Professional-grade Apify Actor for scraping job listings from TheMuse.com with multiple scraping methods and advanced anti-blocking protection.
+Professional-grade Apify Actor for scraping job listings from TheMuse.com via the public jobs API with optional detail enrichment.
 
 ## Key Features
 
-✅ **Multiple Scraping Methods** (automatic fallback):
-- Public JSON API (preferred, fastest)
-- JSON-LD structured data extraction
-- HTML parsing with Cheerio
-- Optional job detail page collection
-
-✅ **Advanced Anti-Blocking** (stealth mode enabled):
-- Latest browser UA + client hint headers (Oct 2025)
-- Human-like delays with random jitter
-- Network latency simulation
-- Aggressive session rotation
-- Realistic referer chains
-- No bot signatures (DNT header removed)
-- Lower concurrency for natural pacing
-
-✅ **Flexible Input Options**:
-- Direct URL scraping (e.g., `https://www.themuse.com/search/keyword/admin/date-posted/last_7d`)
-- Keyword/location/category filters
-- Date-posted filtering (last_7d, last_30d, etc.)
-- Optional job detail collection for full descriptions
+- **Public API First** – queries `https://www.themuse.com/api/public/jobs` directly with pagination and retries.
+- **Smart URL Handling** – accepts `/search/...` pages, converts them into API parameters, and supports direct filters.
+- **Detail Enrichment** – optional calls to `https://www.themuse.com/api/public/jobs/:id` for full descriptions and metadata.
+- **Clean Dataset Output** – deduplicated by job id with normalized fields and helper text output for analytics.
 
 ## Input Configuration
 
@@ -31,72 +15,114 @@ Professional-grade Apify Actor for scraping job listings from TheMuse.com with m
 
 1. **Start URL** (recommended for specific searches):
    ```json
-   {
-     "startUrl": "https://www.themuse.com/search/keyword/admin/date-posted/last_7d",
-     "maxItems": 100,
-     "collectDetails": true
-   }
-   ```
+{
+  "source": "api",
+  "job_id": 12345,
+  "title": "Senior Software Engineer",
+  "company": "Example Corp",
+  "location": "New York, NY",
+  "categories": ["Software Engineering"],
+  "job_category": "Software Engineering",
+  "job_type": "Full-time",
+  "publication_date": "2025-10-20T12:00:00Z",
+  "date_posted": "2025-10-20T12:00:00Z",
+  "url": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
+  "landing_page": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
+  "api_url": "https://www.themuse.com/api/public/jobs/12345",
+  "description_html": "<div>Full job description...</div>",
+  "description_text": "Full job description...",
+  "raw": { /* Original API detail payload */ }
+}
+```
 
-2. **Keyword + Filters** (builds URL automatically):
+2. **Keyword + Filters** (builds API query automatically):
    ```json
-   {
-     "keyword": "software engineer",
-     "location": "Remote",
-     "datePosted": "last_7d",
-     "maxItems": 100,
-     "collectDetails": true
-   }
-   ```
+{
+  "source": "api",
+  "job_id": 12345,
+  "title": "Senior Software Engineer",
+  "company": "Example Corp",
+  "location": "New York, NY",
+  "categories": ["Software Engineering"],
+  "job_category": "Software Engineering",
+  "job_type": "Full-time",
+  "publication_date": "2025-10-20T12:00:00Z",
+  "date_posted": "2025-10-20T12:00:00Z",
+  "url": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
+  "landing_page": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
+  "api_url": "https://www.themuse.com/api/public/jobs/12345",
+  "description_html": "<div>Full job description...</div>",
+  "description_text": "Full job description...",
+  "raw": { /* Original API detail payload */ }
+}
+```
 
-3. **Category** (API-based, fallback):
+3. **API filters only**:
    ```json
-   {
-     "category": "Software Engineering",
-     "maxItems": 200,
-     "collectDetails": false
-   }
-   ```
+{
+  "source": "api",
+  "job_id": 12345,
+  "title": "Senior Software Engineer",
+  "company": "Example Corp",
+  "location": "New York, NY",
+  "categories": ["Software Engineering"],
+  "job_category": "Software Engineering",
+  "job_type": "Full-time",
+  "publication_date": "2025-10-20T12:00:00Z",
+  "date_posted": "2025-10-20T12:00:00Z",
+  "url": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
+  "landing_page": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
+  "api_url": "https://www.themuse.com/api/public/jobs/12345",
+  "description_html": "<div>Full job description...</div>",
+  "description_text": "Full job description...",
+  "raw": { /* Original API detail payload */ }
+}
+```
 
 ### All Input Fields:
-
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|
 | `startUrl` | string | Specific TheMuse listing URL | - |
 | `keyword` | string | Job search keyword | - |
+| `category` | string | API category filter (e.g., `Software Engineering`) | - |
 | `location` | string | Location filter | - |
-| `category` | string | API category filter | "Software Engineering" |
-| `datePosted` | enum | Date filter: `last_7d`, `last_30d`, `last_month` | "" |
+| `company` | string | Restrict results to a company name | - |
+| `datePosted` | enum | Date filter: `last_7d`, `last_30d`, `last_month` | `""` |
+| `level` | string | Seniority filter (e.g., `Entry Level`) | - |
+| `jobType` | string | Job type filter (e.g., `Full-time`) | - |
+| `industry` | string | Industry label recognised by the API | - |
+| `remote` | boolean | Remote-friendly results only | `false` |
+| `tags` | string | Comma-separated tags forwarded to the API | - |
+| `sortBy` | string | Optional Muse API sort key (e.g., `new`, `popular`) | - |
 | `collectDetails` | boolean | Fetch full job detail pages | `true` |
 | `maxItems` | integer | Max jobs to collect (0 = unlimited) | `100` |
 | `maxPages` | integer | Max pages to paginate (0 = unlimited) | `20` |
-| `dedupe` | boolean | Remove duplicate URLs | `true` |
-| `concurrency` | integer | Concurrent requests (1-10) | `2` |
-| `minDelayMs` | integer | Min delay between requests | `300` |
-| `maxDelayMs` | integer | Max delay between requests | `700` |
-| `userAgent` | string | Custom user-agent override | (auto-rotated) |
+| `dedupe` | boolean | Remove duplicate job ids | `true` |
 | `cookies` | string | Raw Cookie header | - |
 | `cookiesJson` | string | JSON cookies (array/object) | - |
 | `proxyConfiguration` | object | Apify Proxy config | Residential |
-| `htmlFallback` | boolean | Try HTML if API fails | `false` |
-
 ## Output Format
 
 Each job record includes:
 
 ```json
 {
-  "id": "12345",
+  "source": "api",
+  "job_id": 12345,
   "title": "Senior Software Engineer",
   "company": "Example Corp",
   "location": "New York, NY",
-  "date_posted": "2025-10-20",
-  "job_type": "Full-time",
+  "categories": ["Software Engineering"],
   "job_category": "Software Engineering",
+  "job_type": "Full-time",
+  "publication_date": "2025-10-20T12:00:00Z",
+  "date_posted": "2025-10-20T12:00:00Z",
   "url": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
-  "job_url": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
+  "landing_page": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
+  "api_url": "https://www.themuse.com/api/public/jobs/12345",
   "description_html": "<div>Full job description...</div>",
-  "raw": { /* Original API/JSON-LD data */ }
+  "description_text": "Full job description...",
+  "raw": { /* Original API detail payload */ }
 }
 ```
 
@@ -130,59 +156,45 @@ node src/main.js
 
 ## Scraping Strategy
 
-The actor intelligently selects the best scraping method:
-
-1. **If `startUrl` or `keyword` provided**: Uses Cheerio HTML crawler with:
-   - JSON-LD extraction (primary)
-   - Anchor-based link extraction (fallback)
-   - Optional detail page fetching
-
-2. **If only `category` provided**: Uses HTTP API crawler:
-   - Direct API calls to `https://www.themuse.com/api/public/jobs`
-   - Automatic category variant resolution
-   - Falls back to HTML if API returns empty results
-
-3. **Detail Collection** (when `collectDetails: true`):
-   - Fetches individual job pages
-   - Extracts full description and metadata
-   - Uses JSON-LD when available
+1. Build API request parameters from `startUrl` (converted) or the provided filters.
+2. Page through `https://www.themuse.com/api/public/jobs` until `maxItems` or `maxPages` is reached, respecting rate limits.
+3. Optionally enrich each job via `https://www.themuse.com/api/public/jobs/:id` when `collectDetails` is enabled.
+4. Write normalized items into the default dataset (with the overview view defined in `.actor/dataset_schema.json`).
 
 ## Anti-Blocking Measures
 
-✅ User-Agent rotation (Chrome, Safari, Firefox)  
-✅ Client hint headers matching UA version  
-✅ Random delays (300-700ms + reading time + latency)  
-✅ Session pool with occasional rotation  
-✅ Realistic referer chains  
-✅ No DNT header or other bot signatures  
-✅ Lower concurrency (default: 2)  
-✅ Exponential backoff on errors  
+- Rotates a realistic desktop User-Agent and matching Client Hints.
+- Randomized inter-request delays and retry with incremental backoff.
+- Optional Apify residential proxy support via `proxyConfiguration`.
+- Cookie injection hooks for markets that need consent bypassing.
+
 
 ## Apify QA Compliance
 
-✅ Valid `input_schema.json` with all fields documented  
-✅ `dataset_schema.json` defines output structure  
-✅ `.actor/actor.json` references all config files  
-✅ Dockerfile with Node 22 runtime  
-✅ Proper error handling and logging  
-✅ Respects Apify SDK patterns (Actor.init/exit, Dataset, ProxyConfiguration)  
+- Input schema exposes every supported filter with defaults and descriptions.
+- Dataset view summarises the most important columns for quick inspection.
+- README documents usage, inputs, outputs, CLI examples, and troubleshooting.
+- Graceful logging and error handling built on `Actor.main` and Apify SDK patterns.
+- Optional proxy configuration presented via the UI, per Apify Store guidelines.
 
 ## Troubleshooting
 
 **No results found?**
-- Check that `category` exactly matches API categories (use "Account Management" not "account_management")
-- Try using `startUrl` or `keyword` instead of `category`
-- Enable `htmlFallback: true` for additional resilience
+- Confirm the filter values (`category`, `company`, `tags`, etc.) match the labels used on TheMuse.
+- Try providing a `startUrl` copied from the site to verify the search works in the API.
+- Relax `maxPages`/`maxItems` if they are set to very small numbers.
 
 **Rate limiting or blocks?**
-- Increase delays: `minDelayMs: 500, maxDelayMs: 1500`
-- Lower concurrency: `concurrency: 1`
-- Enable residential proxies (already default)
+- Increase delays with environment variables (`MIN_DELAY_MS`, `MAX_DELAY_MS`).
+- Run on Apify with an enabled proxy group (RESIDENTIAL by default in the UI).
+- Provide cookies if the site requires consent before serving the API.
 
 **Missing job descriptions?**
-- Enable `collectDetails: true` to fetch full detail pages
-- Check that the job URL is accessible
+- Ensure `collectDetails` is enabled so the detail API endpoint is called.
+- Verify the landing page responds with HTTP 200 when opened manually.
 
 ## Support
 
 For issues or feature requests, check the repository issues or contact the maintainer.
+
+

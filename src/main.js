@@ -1,6 +1,5 @@
 // TheMuse.com job scraper built around the public API with optional detail enrichment.
 import { Actor, log } from 'apify';
-import { Dataset } from 'crawlee';
 import { gotScraping } from 'got-scraping';
 import { load } from 'cheerio';
 
@@ -205,7 +204,6 @@ function normalizeInput(actorInput, cliArgs, env) {
         maxPages,
         perPage,
         collectDetails: bool(env?.COLLECT_DETAILS ?? cliArgs.collectDetails ?? actorInput.collectDetails, false),
-        htmlFallback: bool(env?.HTML_FALLBACK ?? cliArgs.htmlFallback ?? actorInput.htmlFallback, false),
         dedupe: bool(actorInput.dedupe ?? cliArgs.dedupe ?? env?.DEDUPE, true),
         startUrls,
         cookies: actorInput.cookies ?? env?.COOKIES ?? cliArgs.cookies ?? undefined,
@@ -453,7 +451,7 @@ async function runApiFlow({ baseParams, startPage, input, state, fetchOptions, d
             }
 
             const output = formatJob(job, detail);
-            await Dataset.pushData(output);
+            await dataset.pushData(output);
 
             state.totalSaved += 1;
             if (fetchOptions.seenJobs) fetchOptions.seenJobs.add(job.id);
@@ -571,6 +569,9 @@ function passesDateFilter(dateStr, filter) {
 function formatJob(job, detail) {
     const source = detail && detail.id ? detail : job;
     const html = (detail && detail.contents) || job.contents || null;
+    const categories = normalizeArray(source.categories).map(cat => cat.name ?? cat).filter(Boolean);
+    const locations = normalizeArray(source.locations).map(loc => loc.name ?? loc).filter(Boolean);
+
     return {
         source: 'api',
         job_id: source.id ?? null,
@@ -579,13 +580,15 @@ function formatJob(job, detail) {
         company: source.company?.name ?? null,
         company_id: source.company?.id ?? null,
         company_short_name: source.company?.short_name ?? null,
-        locations: normalizeArray(source.locations).map(loc => loc.name).filter(Boolean),
-        location: normalizeArray(source.locations).map(loc => loc.name).filter(Boolean).join(', ') || null,
-        categories: normalizeArray(source.categories).map(cat => cat.name ?? cat).filter(Boolean),
+        locations,
+        location: locations.join(', ') || null,
+        categories,
+        job_category: categories.join(', ') || null,
         levels: normalizeArray(source.levels).map(level => level.name ?? level).filter(Boolean),
         tags: normalizeArray(source.tags).map(tag => tag.name ?? tag).filter(Boolean),
         job_type: source.type ?? null,
         publication_date: source.publication_date ?? null,
+        date_posted: source.publication_date ?? null,
         landing_page: source.refs?.landing_page ?? null,
         url: source.refs?.landing_page ?? null,
         api_url: `${API_BASE_URL}/${source.id}`,

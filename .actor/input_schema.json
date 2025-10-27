@@ -18,10 +18,22 @@
       "editor": "textfield",
       "prefill": ""
     },
+    "category": {
+      "title": "Category filter",
+      "type": "string",
+      "description": "Optional category label to pass to the public API (e.g., 'Software Engineering').",
+      "editor": "textfield"
+    },
     "location": {
       "title": "Location (optional)",
       "type": "string",
       "description": "Location filter for constructing search URLs (e.g., 'New York', 'Remote'). Leave empty for all locations.",
+      "editor": "textfield"
+    },
+    "company": {
+      "title": "Company filter",
+      "type": "string",
+      "description": "Restrict results to a specific company name supported by TheMuse API.",
       "editor": "textfield"
     },
     "datePosted": {
@@ -33,10 +45,47 @@
       "enumTitles": ["All dates", "Last 7 days", "Last 30 days", "Last month"],
       "default": ""
     },
+    "level": {
+      "title": "Seniority level",
+      "type": "string",
+      "description": "Optional seniority filter (e.g., 'Entry Level', 'Mid Level', 'Senior Level').",
+      "editor": "textfield"
+    },
+    "jobType": {
+      "title": "Job type",
+      "type": "string",
+      "description": "Optional job type filter (e.g., 'Full-time', 'Contract').",
+      "editor": "textfield"
+    },
+    "industry": {
+      "title": "Industry",
+      "type": "string",
+      "description": "Optional industry filter expected by TheMuse API.",
+      "editor": "textfield"
+    },
+    "remote": {
+      "title": "Remote only",
+      "type": "boolean",
+      "description": "If enabled, request only remote-friendly listings from the API.",
+      "editor": "checkbox",
+      "default": false
+    },
+    "tags": {
+      "title": "Tags (comma separated)",
+      "type": "string",
+      "description": "Optional comma-separated tag list to forward to the API (e.g., 'Python,Data Science').",
+      "editor": "textfield"
+    },
+    "sortBy": {
+      "title": "Sort order",
+      "type": "string",
+      "description": "Advanced: pass the Muse API `sort` parameter (e.g., 'new', 'popular'). Leave empty to use the API default ordering.",
+      "editor": "textfield"
+    },
     "collectDetails": {
       "title": "Collect job details",
       "type": "boolean",
-      "description": "If enabled, the actor will fetch each job's detail page to extract full description and additional metadata. Recommended for complete data.",
+      "description": "If enabled, the actor will fetch each job's detail endpoint to extract full description and additional metadata. Recommended for complete data.",
       "editor": "checkbox",
       "default": true
     },
@@ -59,7 +108,7 @@
     "dedupe": {
       "title": "Deduplicate results",
       "type": "boolean",
-      "description": "Remove duplicate job URLs from results (in-memory deduplication by URL).",
+      "description": "Remove duplicate job ids from results (in-memory deduplication).",
       "editor": "checkbox",
       "default": true
     },
@@ -84,15 +133,9 @@
         "useApifyProxy": true,
         "apifyProxyGroups": ["RESIDENTIAL"]
       }
-    },
-    "htmlFallback": {
-      "title": "HTML fallback (advanced)",
-      "type": "boolean",
-      "description": "If the API returns no results, attempt HTML parsing as a fallback. Usually not needed.",
-      "editor": "checkbox",
-      "default": false
     }
   },
   "required": [],
   "additionalProperties": false
 }
+
