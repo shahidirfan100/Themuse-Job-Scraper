@@ -147,24 +147,20 @@ async function main() {
             // HTML listing options
             startUrl: process.env.START_URL || cli.startUrl || actorInput.startUrl || undefined,
             startUrls: actorInput.startUrls || (cli.startUrls ? (Array.isArray(cli.startUrls) ? cli.startUrls : String(cli.startUrls).split(',')) : undefined),
-            keyword: process.env.KEYWORD || cli.keyword || actorInput.keyword,
-            location: process.env.LOCATION || cli.location || actorInput.location,
-            datePosted: process.env.DATE_POSTED || cli.datePosted || actorInput.datePosted,
+            keyword: process.env.KEYWORD || cli.keyword || actorInput.keyword || undefined,
+            location: process.env.LOCATION || cli.location || actorInput.location || undefined,
+            datePosted: process.env.DATE_POSTED || cli.datePosted || actorInput.datePosted || undefined,
             // API options
-            category: process.env.CATEGORY || cli.category || actorInput.category || '',
+            category: process.env.CATEGORY || cli.category || actorInput.category || 'Software Engineering',
             // common options
             collectDetails: (process.env.COLLECT_DETAILS || typeof cli.collectDetails !== 'undefined' ? (process.env.COLLECT_DETAILS === 'true' || cli.collectDetails === 'true' || cli.collectDetails === true) : (typeof actorInput.collectDetails === 'boolean' ? actorInput.collectDetails : true)),
-            maxItems: Number(process.env.MAX_ITEMS || cli.maxItems || actorInput.maxItems || 200),
-            maxPages: Number(process.env.MAX_PAGES || cli.maxPages || actorInput.maxPages || 0), // 0 = unlimited until empty
-            userAgent: process.env.USER_AGENT || cli.userAgent || actorInput.userAgent,
-            minDelayMs: Number(process.env.MIN_DELAY_MS || cli.minDelayMs || actorInput.minDelayMs || 300),
-            maxDelayMs: Number(process.env.MAX_DELAY_MS || cli.maxDelayMs || actorInput.maxDelayMs || 700),
-            concurrency: Number(process.env.CONCURRENCY || cli.concurrency || actorInput.concurrency || 2),
+            maxItems: Number(process.env.MAX_ITEMS || cli.maxItems || actorInput.maxItems || 100),
+            maxPages: Number(process.env.MAX_PAGES || cli.maxPages || actorInput.maxPages || 20), // default 20 pages
             proxyConfiguration: actorInput.proxyConfiguration || undefined,
             htmlFallback: (process.env.HTML_FALLBACK || cli.htmlFallback || actorInput.htmlFallback) || false,
             dedupe: (typeof actorInput.dedupe !== 'undefined' ? actorInput.dedupe : (typeof cli.dedupe !== 'undefined' ? cli.dedupe : true)),
-            cookies: process.env.COOKIES || cli.cookies || actorInput.cookies,
-            cookiesJson: process.env.COOKIES_JSON || cli.cookiesJson || actorInput.cookiesJson,
+            cookies: process.env.COOKIES || cli.cookies || actorInput.cookies || undefined,
+            cookiesJson: process.env.COOKIES_JSON || cli.cookiesJson || actorInput.cookiesJson || undefined,
         };
 
         // Provide simple CLI help and dry-run
