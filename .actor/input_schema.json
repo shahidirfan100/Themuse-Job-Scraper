@@ -30,12 +30,6 @@
       "description": "Location filter for constructing search URLs (e.g., 'New York', 'Remote'). Leave empty for all locations.",
       "editor": "textfield"
     },
-    "company": {
-      "title": "Company filter",
-      "type": "string",
-      "description": "Restrict results to a specific company name supported by TheMuse API.",
-      "editor": "textfield"
-    },
     "datePosted": {
       "title": "Date posted filter",
       "type": "string",
@@ -44,43 +38,6 @@
       "enum": ["", "last_7d", "last_30d", "last_month"],
       "enumTitles": ["All dates", "Last 7 days", "Last 30 days", "Last month"],
       "default": ""
-    },
-    "level": {
-      "title": "Seniority level",
-      "type": "string",
-      "description": "Optional seniority filter (e.g., 'Entry Level', 'Mid Level', 'Senior Level').",
-      "editor": "textfield"
-    },
-    "jobType": {
-      "title": "Job type",
-      "type": "string",
-      "description": "Optional job type filter (e.g., 'Full-time', 'Contract').",
-      "editor": "textfield"
-    },
-    "industry": {
-      "title": "Industry",
-      "type": "string",
-      "description": "Optional industry filter expected by TheMuse API.",
-      "editor": "textfield"
-    },
-    "remote": {
-      "title": "Remote only",
-      "type": "boolean",
-      "description": "If enabled, request only remote-friendly listings from the API.",
-      "editor": "checkbox",
-      "default": false
-    },
-    "tags": {
-      "title": "Tags (comma separated)",
-      "type": "string",
-      "description": "Optional comma-separated tag list to forward to the API (e.g., 'Python,Data Science').",
-      "editor": "textfield"
-    },
-    "sortBy": {
-      "title": "Sort order",
-      "type": "string",
-      "description": "Advanced: pass the Muse API `sort` parameter (e.g., 'new', 'popular'). Leave empty to use the API default ordering.",
-      "editor": "textfield"
     },
     "collectDetails": {
       "title": "Collect job details",

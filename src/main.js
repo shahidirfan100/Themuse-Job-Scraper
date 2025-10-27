@@ -191,14 +191,7 @@ function normalizeInput(actorInput, cliArgs, env) {
         query: cliArgs.query ?? env?.QUERY ?? actorInput.query ?? undefined,
         keyword: cliArgs.keyword ?? env?.KEYWORD ?? actorInput.keyword ?? undefined,
         category: cliArgs.category ?? env?.CATEGORY ?? actorInput.category ?? undefined,
-        company: cliArgs.company ?? env?.COMPANY ?? actorInput.company ?? undefined,
         location: cliArgs.location ?? env?.LOCATION ?? actorInput.location ?? undefined,
-        level: cliArgs.level ?? env?.LEVEL ?? actorInput.level ?? undefined,
-        jobType: cliArgs.jobType ?? cliArgs.job_type ?? env?.JOB_TYPE ?? actorInput.jobType ?? actorInput.job_type ?? undefined,
-        industry: cliArgs.industry ?? env?.INDUSTRY ?? actorInput.industry ?? undefined,
-        remote: bool(cliArgs.remote ?? env?.REMOTE ?? actorInput.remote, undefined),
-        sortBy: cliArgs.sort ?? env?.SORT ?? actorInput.sort ?? undefined,
-        tags: parseList(actorInput.tags ?? cliArgs.tags ?? env?.TAGS),
         dateRaw: env?.DATE_POSTED ?? cliArgs.datePosted ?? actorInput.datePosted ?? actorInput.publishedWithin ?? undefined,
         maxItems,
         maxPages,
@@ -273,22 +266,6 @@ function parseStartUrls(value) {
     return [];
 }
 
-function parseList(value) {
-    if (!value) return [];
-    if (Array.isArray(value)) {
-        return value
-            .map(v => (typeof v === 'string' ? v.trim() : String(v)))
-            .filter(Boolean);
-    }
-    if (typeof value === 'string') {
-        return value
-            .split(/[,;]+/)
-            .map(v => v.trim())
-            .filter(Boolean);
-    }
-    return [];
-}
-
 function dedupeArray(arr) {
     return Array.from(new Set(arr.filter(Boolean)));
 }
@@ -331,13 +308,6 @@ function buildApiParamsFromInput(input) {
     if (input.query) params.set('q', input.query);
     if (input.category) params.set('category', input.category);
     if (input.location) params.set('location', input.location);
-    if (input.company) params.set('company', input.company);
-    if (input.level) params.set('level', input.level);
-    if (input.jobType) params.set('job_type', input.jobType);
-    if (input.industry) params.set('industry', input.industry);
-    if (Array.isArray(input.tags) && input.tags.length > 0) params.set('tags', input.tags.join(','));
-    if (typeof input.remote === 'boolean') params.set('remote', input.remote ? 'true' : 'false');
-    if (input.sortBy) params.set('sort', input.sortBy);
     return params;
 }
 

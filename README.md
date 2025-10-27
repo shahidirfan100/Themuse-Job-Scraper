@@ -59,25 +59,11 @@ Professional-grade Apify Actor for scraping job listings from TheMuse.com via th
 
 3. **API filters only**:
    ```json
-{
-  "source": "api",
-  "job_id": 12345,
-  "title": "Senior Software Engineer",
-  "company": "Example Corp",
-  "location": "New York, NY",
-  "categories": ["Software Engineering"],
-  "job_category": "Software Engineering",
-  "job_type": "Full-time",
-  "publication_date": "2025-10-20T12:00:00Z",
-  "date_posted": "2025-10-20T12:00:00Z",
-  "url": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
-  "landing_page": "https://www.themuse.com/jobs/examplecorp/senior-software-engineer",
-  "api_url": "https://www.themuse.com/api/public/jobs/12345",
-  "description_html": "<div>Full job description...</div>",
-  "description_text": "Full job description...",
-  "raw": { /* Original API detail payload */ }
-}
-```
+   {
+     "category": "Software Engineering",
+     "maxItems": 200
+   }
+   ```
 
 ### All Input Fields:
 | Field | Type | Description | Default |
@@ -86,14 +72,7 @@ Professional-grade Apify Actor for scraping job listings from TheMuse.com via th
 | `keyword` | string | Job search keyword | - |
 | `category` | string | API category filter (e.g., `Software Engineering`) | - |
 | `location` | string | Location filter | - |
-| `company` | string | Restrict results to a company name | - |
 | `datePosted` | enum | Date filter: `last_7d`, `last_30d`, `last_month` | `""` |
-| `level` | string | Seniority filter (e.g., `Entry Level`) | - |
-| `jobType` | string | Job type filter (e.g., `Full-time`) | - |
-| `industry` | string | Industry label recognised by the API | - |
-| `remote` | boolean | Remote-friendly results only | `false` |
-| `tags` | string | Comma-separated tags forwarded to the API | - |
-| `sortBy` | string | Optional Muse API sort key (e.g., `new`, `popular`) | - |
 | `collectDetails` | boolean | Fetch full job detail pages | `true` |
 | `maxItems` | integer | Max jobs to collect (0 = unlimited) | `100` |
 | `maxPages` | integer | Max pages to paginate (0 = unlimited) | `20` |
@@ -180,7 +159,7 @@ node src/main.js
 ## Troubleshooting
 
 **No results found?**
-- Confirm the filter values (`category`, `company`, `tags`, etc.) match the labels used on TheMuse.
+- Confirm the filter values (e.g., `category`) match the labels used on TheMuse.
 - Try providing a `startUrl` copied from the site to verify the search works in the API.
 - Relax `maxPages`/`maxItems` if they are set to very small numbers.
 
@@ -196,5 +175,6 @@ node src/main.js
 ## Support
 
 For issues or feature requests, check the repository issues or contact the maintainer.
+
 
 
