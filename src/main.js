@@ -45,77 +45,6 @@ function pickUserAgent(provided) {
     return DEFAULT_USER_AGENTS[randomInt(0, DEFAULT_USER_AGENTS.length - 1)];
 }
 
-function generateCategoryVariants(category) {
-    // Try a few reasonable variants to account for case/casing and underscores
-    const variants = new Set();
-    if (!category) return [];
-    const trimmed = category.trim();
-    variants.add(trimmed);
-    variants.add(trimmed.replace(/_/g, ' '));
-    // Title case
-    variants.add(trimmed.split(/[_\s]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' '));
-    // Lowercase with underscores
-    variants.add(trimmed.toLowerCase().replace(/\s+/g, '_'));
-    // Uppercase first
-    variants.add(trimmed.charAt(0).toUpperCase() + trimmed.slice(1));
-    return Array.from(variants);
-}
-
-// Try to resolve a best-fit category for TheMuse API by probing the API and available categories
-async function tryResolveCategory(preferredCategory, proxyConf, userAgent) {
-    if (!preferredCategory) return null;
-    const candidates = generateCategoryVariants(preferredCategory);
-    // Try candidates directly first (sequentially) to find one that returns jobs
-    for (const c of candidates) {
-        try {
-            const url = new URL(API_BASE_URL);
-            url.searchParams.set('category', c);
-            url.searchParams.set('page', '1');
-            const res = await fetch(url.href, { headers: { 'user-agent': userAgent, 'accept': 'application/json' } });
-            if (!res.ok) continue;
-            const data = await res.json();
-            if (data && Array.isArray(data.results) && data.results.length > 0) {
-                return c;
-            }
-        } catch (e) {
-            // ignore transient errors and try next candidate
-        }
-    }
-
-    // If direct candidates didn't match, probe a sample of jobs without category to learn available categories
-    try {
-        const sampleUrl = new URL(API_BASE_URL);
-        sampleUrl.searchParams.set('page', '1');
-        const res = await fetch(sampleUrl.href, { headers: { 'user-agent': userAgent, 'accept': 'application/json' } });
-        if (res.ok) {
-            const data = await res.json();
-            const available = new Set();
-            if (data && Array.isArray(data.results)) {
-                for (const job of data.results) {
-                    if (job.categories && Array.isArray(job.categories)) {
-                        for (const cat of job.categories) {
-                            if (cat && cat.name) available.add(cat.name);
-                        }
-                    }
-                }
-            }
-            const normalizedPreferred = ('' + preferredCategory).toLowerCase().replace(/[^a-z0-9]+/g, '');
-            for (const av of Array.from(available)) {
-                const norm = ('' + av).toLowerCase().replace(/[^a-z0-9]+/g, '');
-                if (norm === normalizedPreferred) return av; // exact normalized match
-            }
-            // try fuzzy contains
-            for (const av of Array.from(available)) {
-                if (av.toLowerCase().includes(preferredCategory.toLowerCase())) return av;
-            }
-        }
-    } catch (e) {
-        // ignore
-    }
-
-    return null;
-}
-
 // Early startup log so container shows activity immediately
 console.log('Starting TheMuse actor - initializing...');
 try {
@@ -150,8 +79,6 @@ async function main() {
             keyword: process.env.KEYWORD || cli.keyword || actorInput.keyword || undefined,
             location: process.env.LOCATION || cli.location || actorInput.location || undefined,
             datePosted: process.env.DATE_POSTED || cli.datePosted || actorInput.datePosted || undefined,
-            // API options
-            category: process.env.CATEGORY || cli.category || actorInput.category || 'Software Engineering',
             // common options
             collectDetails: (process.env.COLLECT_DETAILS || typeof cli.collectDetails !== 'undefined' ? (process.env.COLLECT_DETAILS === 'true' || cli.collectDetails === 'true' || cli.collectDetails === true) : (typeof actorInput.collectDetails === 'boolean' ? actorInput.collectDetails : true)),
             maxItems: Number(process.env.MAX_ITEMS || cli.maxItems || actorInput.maxItems || 100),
@@ -191,7 +118,6 @@ async function main() {
         const seenUrls = input.dedupe ? new Set() : null;
 
         log.info('Starting TheMuse scraper', { 
-            category: input.category, 
             keyword: input.keyword,
             startUrl: input.startUrl,
             maxItems: input.maxItems, 
@@ -626,40 +552,12 @@ async function main() {
             return;
         }
 
-        // Resolve category robustly: try direct candidates and sample API categories to find a best-fit
-        let resolvedCategory = null;
-        if (input.category && input.category.trim()) {
-            try {
-                resolvedCategory = await tryResolveCategory(input.category, proxyConf, userAgent);
-                if (resolvedCategory) log.info('Resolved category for API', { requested: input.category, resolved: resolvedCategory });
-                else log.warning('Could not resolve exact category; will attempt variant runs', { requested: input.category });
-            } catch (e) {
-                log.debug('Category resolution failed', { error: e && e.message });
-            }
-        }
-
+        // Always fetch recent jobs from API (no category filtering)
+        log.info('Fetching recent jobs from TheMuse API');
         const startRequests = [];
-        if (resolvedCategory) {
-            const u = new URL(API_BASE_URL);
-            u.searchParams.set('category', resolvedCategory);
-            u.searchParams.set('page', '1');
-            startRequests.push({ url: u.href, userData: { variant: resolvedCategory } });
-        } else if (input.category && input.category.trim()) {
-            // Build start URLs using category variants to handle case/casing differences
-            const variants = generateCategoryVariants(input.category);
-            for (const v of variants) {
-                const u = new URL(API_BASE_URL);
-                u.searchParams.set('category', v);
-                u.searchParams.set('page', '1');
-                startRequests.push({ url: u.href, userData: { variant: v } });
-            }
-        } else {
-            // No category provided, fetch recent jobs without filter
-            log.info('No category specified, fetching recent jobs from API');
-            const u = new URL(API_BASE_URL);
-            u.searchParams.set('page', '1');
-            startRequests.push({ url: u.href, userData: { variant: 'all' } });
-        }
+        const u = new URL(API_BASE_URL);
+        u.searchParams.set('page', '1');
+        startRequests.push({ url: u.href, userData: { variant: 'recent' } });
 
         // Run the HTTP crawler only if we have requests
         if (startRequests.length > 0) {
@@ -703,7 +601,8 @@ async function main() {
 
             // generate HTML listing pages
             const htmlStartRequests = [];
-            for (const v of variants) {
+            const fallbackVariants = ['Software Engineering', 'Data Science', 'Product Management', 'Marketing', 'Design'];
+            for (const v of fallbackVariants) {
                 const base = `https://www.themuse.com/search/category/${encodeURIComponent(v.replace(/\s+/g, '_'))}`;
                 htmlStartRequests.push({ url: `${base}?page=1` });
             }
