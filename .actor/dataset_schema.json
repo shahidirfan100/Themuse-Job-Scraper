@@ -1,6 +1,55 @@
 {
   "actorSpecification": 1,
-  "fields": {},
+  "fields": {
+    "id": {
+      "type": "string",
+      "description": "Job identifier"
+    },
+    "title": {
+      "type": "string",
+      "description": "Job title"
+    },
+    "company": {
+      "type": "string",
+      "description": "Company name"
+    },
+    "location": {
+      "type": "string",
+      "description": "Job location(s)"
+    },
+    "salary": {
+      "type": ["string", "null"],
+      "description": "Salary information (if available)"
+    },
+    "job_type": {
+      "type": "string",
+      "description": "Employment type (Full-time, Part-time, etc.)"
+    },
+    "job_category": {
+      "type": "string",
+      "description": "Job category/categories"
+    },
+    "date_posted": {
+      "type": "string",
+      "description": "Date when job was posted"
+    },
+    "url": {
+      "type": "string",
+      "description": "Job listing URL"
+    },
+    "job_url": {
+      "type": "string",
+      "description": "Job listing URL (alternate field)"
+    },
+    "description_html": {
+      "type": "string",
+      "description": "Full job description in HTML format"
+    },
+    "raw": {
+      "type": ["object", "null"],
+      "description": "Raw data from API or JSON-LD"
+    }
+  },
   "views": {
     "overview": {
       "title": "Overview",
@@ -9,8 +58,8 @@
           "title",
           "company",
           "location",
-          "salary",
           "job_type",
+          "job_category",
           "date_posted",
           "url"
         ]
@@ -30,12 +79,12 @@
             "label": "Location",
             "format": "text"
           },
-          "salary": {
-            "label": "Salary",
+          "job_type": {
+            "label": "Type",
             "format": "text"
           },
-          "job_type": {
-            "label": "Job Type",
+          "job_category": {
+            "label": "Category",
             "format": "text"
           },
           "date_posted": {

@@ -327,13 +327,25 @@ async function main() {
             },
         });
 
-        // Check for explicit start URLs (from Actor input, CLI or env). If provided, run an HTML CheerioCrawler
+        // Build start URLs: check for explicit startUrl, or construct from keyword/location/datePosted
         let rawStartUrls = actorInput.startUrls || cli.startUrls || process.env.START_URLS || null;
-        // also support single startUrl
-        if (!rawStartUrls && actorInput.startUrl) {
-            // actorInput.startUrl may be string
-            rawStartUrls = actorInput.startUrl;
+        
+        // Support single startUrl
+        if (!rawStartUrls && (input.startUrl || actorInput.startUrl)) {
+            rawStartUrls = input.startUrl || actorInput.startUrl;
         }
+        
+        // If no explicit URL, construct one from keyword/location/datePosted
+        if (!rawStartUrls && (input.keyword || input.location || input.datePosted)) {
+            const parts = ['https://www.themuse.com/search'];
+            if (input.keyword) parts.push('keyword', encodeURIComponent(input.keyword.trim().replace(/\s+/g, '-').toLowerCase()));
+            if (input.location) parts.push('location', encodeURIComponent(input.location.trim().replace(/\s+/g, '-').toLowerCase()));
+            if (input.datePosted) parts.push('date-posted', encodeURIComponent(input.datePosted));
+            const constructedUrl = parts.join('/');
+            rawStartUrls = constructedUrl;
+            log.info('Constructed search URL from keyword/location/datePosted', { url: constructedUrl });
+        }
+        
         let explicitStartUrls = [];
         if (rawStartUrls) {
             if (Array.isArray(rawStartUrls)) explicitStartUrls = rawStartUrls;
@@ -593,6 +605,13 @@ async function main() {
 
             const startRequests = explicitStartUrls.map(u => ({ url: u }));
             await cheerioListingCrawler.run(startRequests);
+            
+            // If collectDetails is enabled and we have a detailCrawler, run it now
+            if (input.collectDetails && detailCrawler) {
+                log.info('Running detail crawler to fetch full job pages', { pending: detailCrawler.requestQueue ? 'many' : 'unknown' });
+                await detailCrawler.run();
+            }
+            
             log.info('Finished explicit HTML crawl', { saved: itemCount });
             // done
             await Actor.exit();

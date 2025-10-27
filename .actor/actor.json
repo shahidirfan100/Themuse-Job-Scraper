@@ -1,13 +1,17 @@
 {
   "actorSpecification": 1,
   "name": "themuse-jobs-scraper",
-  "version": "1.0.1",
-  "buildTag": "1.0.1",
+  "title": "TheMuse Job Scraper",
+  "description": "Scrape jobs from TheMuse.com with multiple methods (API, JSON-LD, HTML). Supports keyword/location/category search, job detail collection, and advanced anti-blocking.",
+  "version": "2.0.0",
+  "buildTag": "2.0.0",
   "dockerfile": "./Dockerfile",
   "readme": "../README.md",
   "input": "./input_schema.json",
   "nodeJsVersion": "22",
   "storages": {
     "dataset": "./dataset_schema.json"
-  }
+  },
+  "categories": ["JOBS"],
+  "tags": ["jobs", "themuse", "scraper", "careers"]
 }

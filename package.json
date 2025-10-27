@@ -1,7 +1,7 @@
 {
   "name": "themuse-jobs-actor",
   "version": "2.0.0",
-  "description": "Efficient TheMuse.com jobs scraper using their public JSON API and Crawlee.",
+  "description": "Professional TheMuse.com jobs scraper using public API, JSON-LD, and HTML parsing with Crawlee.",
   "type": "module",
   "scripts": {
     "start": "node src/main.js"
@@ -11,5 +11,8 @@
     "crawlee": "^3.14.1",
     "cheerio": "^1.0.0-rc.12",
     "got-scraping": "^4.0.3"
-  }
+  },
+  "keywords": ["apify", "scraper", "themuse", "jobs", "crawlee"],
+  "author": "",
+  "license": "ISC"
 }
