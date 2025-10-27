@@ -1,624 +1,682 @@
-
-
-// TheMuse.com jobs scraper - Direct API implementation with safe defaults and fallbacks
+// TheMuse.com job scraper built around the public API with optional detail enrichment.
 import { Actor, log } from 'apify';
-import { HttpCrawler, CheerioCrawler, Dataset } from 'crawlee';
-
+import { Dataset } from 'crawlee';
+import { gotScraping } from 'got-scraping';
+import { load } from 'cheerio';
 
 const API_BASE_URL = 'https://www.themuse.com/api/public/jobs';
 
-// Small list of User-Agents to rotate; keep lightweight and avoid external deps
 const DEFAULT_USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 ];
 
+const DATE_FILTER_MAP = {
+    'today': 1,
+    '1d': 1,
+    '24h': 1,
+    'past_day': 1,
+    'past_24_hours': 1,
+    '3d': 3,
+    '72h': 3,
+    'week': 7,
+    '1w': 7,
+    '7d': 7,
+    'two_weeks': 14,
+    '14d': 14,
+    'month': 30,
+    '1m': 30,
+    '30d': 30,
+    '3m': 90,
+    '90d': 90
+};
+
+await Actor.main(async () => {
+    const cliArgs = parseCliArgs();
+    const actorInput = (await Actor.getInput()) || {};
+    const input = normalizeInput(actorInput, cliArgs, process.env);
+
+    if (!input.query && input.keyword) input.query = input.keyword;
+
+    const userAgent = pickUserAgent(input.userAgent);
+    let proxyConfiguration;
+    try {
+        proxyConfiguration = await Actor.createProxyConfiguration(input.proxyConfiguration || undefined);
+    } catch (err) {
+        log.warning('Proxy configuration could not be created. Requests will run without a proxy.', { error: err.message });
+    }
+
+    const cookieHeader = buildCookieHeader(input.cookies, input.cookiesJson);
+    const seenJobs = input.dedupe ? new Set() : null;
+    const dataset = await Actor.openDataset();
+
+    const fetchOptions = {
+        userAgent,
+        proxyConfiguration,
+        cookieHeader,
+        seenJobs,
+        maxRetries: input.requestRetries,
+        timeoutMillis: input.requestTimeoutMillis,
+        detailRetries: input.detailRetries
+    };
+
+    const state = {
+        totalSaved: 0,
+        totalRequests: 0,
+        pagesFetched: 0,
+        apiErrors: 0
+    };
+
+    const { apiUrls, htmlUrls } = partitionStartUrls(input.startUrls);
+
+    if (apiUrls.length > 0) {
+        log.info('Processing explicit API URLs supplied in startUrls', { count: apiUrls.length });
+        for (const apiUrl of apiUrls) {
+            if (input.maxItems > 0 && state.totalSaved >= input.maxItems) break;
+            let params;
+            let startingPage = 1;
+            try {
+                const parsed = new URL(apiUrl);
+                params = new URLSearchParams(parsed.searchParams);
+                startingPage = Number(params.get('page')) || 1;
+                params.delete('page');
+            } catch (err) {
+                log.warning('Failed to parse API URL, skipping', { url: apiUrl, error: err.message });
+                continue;
+            }
+            ensureCoreParams(params, input);
+            await runApiFlow({
+                baseParams: params,
+                startPage: startingPage,
+                input,
+                state,
+                fetchOptions,
+                dataset
+            });
+        }
+    } else {
+        const paramSets = [];
+        if (htmlUrls.length > 0) {
+            log.info('Converting HTML search URLs to API parameters', { count: htmlUrls.length });
+            for (const htmlUrl of htmlUrls) {
+                const params = convertSearchUrlToParams(htmlUrl);
+                if (params) {
+                    ensureCoreParams(params, input);
+                    paramSets.push({ params, label: htmlUrl });
+                } else {
+                    log.warning('Unable to translate HTML search URL into API filters', { url: htmlUrl });
+                }
+            }
+        }
+
+        if (paramSets.length === 0) {
+            const defaultParams = buildApiParamsFromInput(input);
+            ensureCoreParams(defaultParams, input);
+            paramSets.push({ params: defaultParams, label: 'default filters' });
+        }
+
+        for (const candidate of paramSets) {
+            if (input.maxItems > 0 && state.totalSaved >= input.maxItems) break;
+            log.info('Fetching jobs via API', { source: candidate.label });
+            await runApiFlow({
+                baseParams: candidate.params,
+                startPage: 1,
+                input,
+                state,
+                fetchOptions,
+                dataset
+            });
+        }
+    }
+
+    if (state.totalSaved === 0) {
+        log.warning('No jobs were saved. Review your filters or relax them to widen the search.');
+    }
+
+    log.info('Crawl finished', {
+        total_saved: state.totalSaved,
+        api_requests: state.totalRequests,
+        pages_fetched: state.pagesFetched,
+        api_errors: state.apiErrors
+    });
+});
+
+function parseCliArgs() {
+    const argv = process.argv.slice(2);
+    const out = {};
+    for (let i = 0; i < argv.length; i++) {
+        const current = argv[i];
+        if (!current.startsWith('--')) continue;
+        const key = current.slice(2);
+        const next = argv[i + 1];
+        if (next && !next.startsWith('--')) {
+            out[key] = next;
+            i++;
+        } else {
+            out[key] = true;
+        }
+    }
+    return out;
+}
+
+function normalizeInput(actorInput, cliArgs, env) {
+    const bool = normalizeBoolean;
+    const num = normalizeNumber;
+
+    const startUrls = dedupeArray([
+        ...parseStartUrls(actorInput.startUrls),
+        ...parseStartUrls(cliArgs.startUrls),
+        ...parseStartUrls(env?.START_URLS)
+    ]);
+
+    const singleStartUrl = actorInput.startUrl || cliArgs.startUrl || env?.START_URL;
+    if (singleStartUrl) startUrls.unshift(singleStartUrl);
+
+    let maxItems = num(env?.MAX_ITEMS ?? cliArgs.maxItems ?? actorInput.maxItems ?? actorInput.results_wanted, 100);
+    if (!Number.isFinite(maxItems) || maxItems < 0) maxItems = 0;
+
+    let maxPages = num(env?.MAX_PAGES ?? cliArgs.maxPages ?? actorInput.maxPages ?? actorInput.max_pages, 20);
+    if (!Number.isFinite(maxPages) || maxPages < 0) maxPages = 0;
+
+    let perPage = num(env?.PER_PAGE ?? cliArgs.perPage ?? actorInput.perPage ?? actorInput.per_page ?? actorInput.items_per_page, 20);
+    if (!Number.isFinite(perPage) || perPage <= 0) perPage = 20;
+    perPage = Math.min(Math.max(Math.floor(perPage), 1), 50);
+
+    let minDelayMs = num(env?.MIN_DELAY_MS ?? cliArgs.minDelayMs ?? actorInput.minDelayMs, 350);
+    let maxDelayMs = num(env?.MAX_DELAY_MS ?? cliArgs.maxDelayMs ?? actorInput.maxDelayMs, 750);
+    if (!Number.isFinite(minDelayMs) || minDelayMs < 0) minDelayMs = 350;
+    if (!Number.isFinite(maxDelayMs) || maxDelayMs < minDelayMs) maxDelayMs = minDelayMs + 250;
+
+    const input = {
+        query: cliArgs.query ?? env?.QUERY ?? actorInput.query ?? undefined,
+        keyword: cliArgs.keyword ?? env?.KEYWORD ?? actorInput.keyword ?? undefined,
+        category: cliArgs.category ?? env?.CATEGORY ?? actorInput.category ?? undefined,
+        company: cliArgs.company ?? env?.COMPANY ?? actorInput.company ?? undefined,
+        location: cliArgs.location ?? env?.LOCATION ?? actorInput.location ?? undefined,
+        level: cliArgs.level ?? env?.LEVEL ?? actorInput.level ?? undefined,
+        jobType: cliArgs.jobType ?? cliArgs.job_type ?? env?.JOB_TYPE ?? actorInput.jobType ?? actorInput.job_type ?? undefined,
+        industry: cliArgs.industry ?? env?.INDUSTRY ?? actorInput.industry ?? undefined,
+        remote: bool(cliArgs.remote ?? env?.REMOTE ?? actorInput.remote, undefined),
+        sortBy: cliArgs.sort ?? env?.SORT ?? actorInput.sort ?? undefined,
+        tags: parseList(actorInput.tags ?? cliArgs.tags ?? env?.TAGS),
+        dateRaw: env?.DATE_POSTED ?? cliArgs.datePosted ?? actorInput.datePosted ?? actorInput.publishedWithin ?? undefined,
+        maxItems,
+        maxPages,
+        perPage,
+        collectDetails: bool(env?.COLLECT_DETAILS ?? cliArgs.collectDetails ?? actorInput.collectDetails, false),
+        htmlFallback: bool(env?.HTML_FALLBACK ?? cliArgs.htmlFallback ?? actorInput.htmlFallback, false),
+        dedupe: bool(actorInput.dedupe ?? cliArgs.dedupe ?? env?.DEDUPE, true),
+        startUrls,
+        cookies: actorInput.cookies ?? env?.COOKIES ?? cliArgs.cookies ?? undefined,
+        cookiesJson: actorInput.cookiesJson ?? env?.COOKIES_JSON ?? cliArgs.cookiesJson ?? undefined,
+        proxyConfiguration: actorInput.proxyConfiguration,
+        userAgent: actorInput.userAgent ?? env?.USER_AGENT ?? cliArgs.userAgent ?? undefined,
+        minDelayMs,
+        maxDelayMs,
+        requestRetries: Math.max(1, Math.floor(num(env?.REQUEST_RETRIES ?? cliArgs.requestRetries ?? actorInput.requestRetries, 3))),
+        detailRetries: Math.max(0, Math.floor(num(env?.DETAIL_RETRIES ?? cliArgs.detailRetries ?? actorInput.detailRetries, 2))),
+        requestTimeoutMillis: Math.max(5000, Math.floor(num(env?.REQUEST_TIMEOUT_MS ?? cliArgs.requestTimeoutMs ?? actorInput.requestTimeoutMs, 25000)))
+    };
+
+    input.dateFilter = normalizeDateFilter(input.dateRaw);
+    return input;
+}
+
+function normalizeBoolean(value, defaultValue) {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') {
+        const lower = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(lower)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(lower)) return false;
+    }
+    return defaultValue;
+}
+
+function normalizeNumber(value, defaultValue) {
+    if (value === null || typeof value === 'undefined' || value === '') return defaultValue;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : defaultValue;
+}
+
+function parseStartUrls(value) {
+    if (!value) return [];
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return [];
+        if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+            try {
+                return parseStartUrls(JSON.parse(trimmed));
+            } catch {
+                return trimmed.split(',').map(s => s.trim()).filter(Boolean);
+            }
+        }
+        return trimmed.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    if (Array.isArray(value)) {
+        const out = [];
+        for (const entry of value) {
+            if (!entry) continue;
+            if (typeof entry === 'string') {
+                const trimmed = entry.trim();
+                if (trimmed) out.push(trimmed);
+            } else if (typeof entry === 'object' && entry.url) {
+                const trimmed = String(entry.url).trim();
+                if (trimmed) out.push(trimmed);
+            }
+        }
+        return out;
+    }
+    if (typeof value === 'object' && value.url) {
+        const trimmed = String(value.url).trim();
+        return trimmed ? [trimmed] : [];
+    }
+    return [];
+}
+
+function parseList(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+        return value
+            .map(v => (typeof v === 'string' ? v.trim() : String(v)))
+            .filter(Boolean);
+    }
+    if (typeof value === 'string') {
+        return value
+            .split(/[,;]+/)
+            .map(v => v.trim())
+            .filter(Boolean);
+    }
+    return [];
+}
+
+function dedupeArray(arr) {
+    return Array.from(new Set(arr.filter(Boolean)));
+}
+
+function normalizeDateFilter(value) {
+    if (!value && value !== 0) return null;
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        return { type: 'range', days: value };
+    }
+    const str = String(value).trim();
+    if (!str) return null;
+    const lower = str.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(DATE_FILTER_MAP, lower)) {
+        return { type: 'range', days: DATE_FILTER_MAP[lower] };
+    }
+    const rangeMatch = lower.match(/^(\d+)\s*(d|day|days|w|week|weeks|m|month|months)$/);
+    if (rangeMatch) {
+        const qty = Number(rangeMatch[1]);
+        const unit = rangeMatch[2];
+        let days = qty;
+        if (unit.startsWith('w')) days = qty * 7;
+        else if (unit.startsWith('m')) days = qty * 30;
+        return { type: 'range', days };
+    }
+    const parsedDate = new Date(str);
+    if (!Number.isNaN(parsedDate.getTime())) {
+        return { type: 'since', since: parsedDate };
+    }
+    log.warning('Unable to interpret date filter, ignoring', { value });
+    return null;
+}
+
+function ensureCoreParams(params, input) {
+    if (!params.has('per_page')) params.set('per_page', String(input.perPage));
+    if (!params.has('descending')) params.set('descending', 'true');
+}
+
+function buildApiParamsFromInput(input) {
+    const params = new URLSearchParams();
+    if (input.query) params.set('q', input.query);
+    if (input.category) params.set('category', input.category);
+    if (input.location) params.set('location', input.location);
+    if (input.company) params.set('company', input.company);
+    if (input.level) params.set('level', input.level);
+    if (input.jobType) params.set('job_type', input.jobType);
+    if (input.industry) params.set('industry', input.industry);
+    if (Array.isArray(input.tags) && input.tags.length > 0) params.set('tags', input.tags.join(','));
+    if (typeof input.remote === 'boolean') params.set('remote', input.remote ? 'true' : 'false');
+    if (input.sortBy) params.set('sort', input.sortBy);
+    return params;
+}
+
+function convertSearchUrlToParams(urlString) {
+    try {
+        const parsed = new URL(urlString);
+        const params = new URLSearchParams(parsed.searchParams);
+        const segments = parsed.pathname.split('/').filter(Boolean);
+        const searchIndex = segments.indexOf('search');
+        if (searchIndex === -1) return null;
+        for (let i = searchIndex + 1; i < segments.length; i += 2) {
+            const key = segments[i];
+            const value = segments[i + 1];
+            if (!value) continue;
+            const decoded = decodeURIComponent(value).replace(/_/g, ' ');
+            switch (key.toLowerCase()) {
+                case 'keyword':
+                case 'query':
+                case 'q':
+                    params.set('q', decoded);
+                    break;
+                case 'category':
+                    params.set('category', decoded);
+                    break;
+                case 'location':
+                    params.set('location', decoded);
+                    break;
+                case 'company':
+                    params.set('company', decoded);
+                    break;
+                case 'level':
+                    params.set('level', decoded);
+                    break;
+                case 'jobtype':
+                case 'job_type':
+                    params.set('job_type', decoded);
+                    break;
+                case 'tag':
+                case 'tags':
+                    params.set('tags', decoded.replace(/\s*,\s*/g, ','));
+                    break;
+                case 'remote':
+                    params.set('remote', ['true', '1', 'yes', 'y'].includes(decoded.toLowerCase()) ? 'true' : 'false');
+                    break;
+                default:
+                    params.set(key, decoded);
+            }
+        }
+        return params;
+    } catch {
+        return null;
+    }
+}
+
+function partitionStartUrls(urls) {
+    const apiUrls = [];
+    const htmlUrls = [];
+    for (const url of urls) {
+        if (!url) continue;
+        if (url.includes('/api/public/')) apiUrls.push(url);
+        else htmlUrls.push(url);
+    }
+    return { apiUrls, htmlUrls };
+}
+
+async function runApiFlow({ baseParams, startPage, input, state, fetchOptions, dataset }) {
+    const baseParamString = typeof baseParams === 'string' ? baseParams : baseParams.toString();
+    let currentPage = startPage;
+    let pagesProcessed = 0;
+
+    while (true) {
+        if (input.maxItems > 0 && state.totalSaved >= input.maxItems) break;
+        if (input.maxPages > 0 && pagesProcessed >= input.maxPages) break;
+
+        const params = new URLSearchParams(baseParamString);
+        params.set('page', String(currentPage));
+        ensureCoreParams(params, input);
+
+        let apiResult;
+        try {
+            apiResult = await fetchApiPage(params, fetchOptions);
+        } catch (err) {
+            state.apiErrors += 1;
+            log.error('API request failed after retries.', { page: currentPage, error: err.message });
+            break;
+        }
+
+        state.totalRequests += 1;
+        const data = apiResult.data;
+        if (!data || !Array.isArray(data.results)) {
+            log.warning('API response did not include results array.', { page: currentPage, url: apiResult.url });
+            break;
+        }
+
+        const jobs = data.results;
+        log.info(`API page ${currentPage} returned ${jobs.length} jobs`, { url: apiResult.url });
+        pagesProcessed += 1;
+        state.pagesFetched += 1;
+
+        if (jobs.length === 0) break;
+
+        for (const job of jobs) {
+            if (input.maxItems > 0 && state.totalSaved >= input.maxItems) break;
+
+            if (!passesDateFilter(job.publication_date, input.dateFilter)) continue;
+            if (fetchOptions.seenJobs && fetchOptions.seenJobs.has(job.id)) continue;
+
+            let detail = null;
+            if (input.collectDetails && job && job.id) {
+                detail = await fetchJobDetail(job.id, fetchOptions);
+            }
+
+            const output = formatJob(job, detail);
+            await Dataset.pushData(output);
+
+            state.totalSaved += 1;
+            if (fetchOptions.seenJobs) fetchOptions.seenJobs.add(job.id);
+            if (input.maxItems > 0 && state.totalSaved >= input.maxItems) break;
+        }
+
+        if (data.page_count && currentPage >= data.page_count) {
+            log.debug('Reached last available page from API.', { page: currentPage, page_count: data.page_count });
+            break;
+        }
+
+        currentPage += 1;
+        await sleep(randomInt(input.minDelayMs, input.maxDelayMs));
+    }
+}
+
+async function fetchApiPage(params, options) {
+    const url = `${API_BASE_URL}?${params.toString()}`;
+    let lastError;
+    for (let attempt = 0; attempt < options.maxRetries; attempt++) {
+        try {
+            const proxyUrl = options.proxyConfiguration ? await options.proxyConfiguration.newUrl() : undefined;
+            const response = await gotScraping({
+                url,
+                proxyUrl,
+                headers: buildApiHeaders(options.userAgent, options.cookieHeader),
+                timeout: { request: options.timeoutMillis },
+                responseType: 'json',
+                throwHttpErrors: false
+            });
+
+            if (response.statusCode === 200) {
+                return { data: response.body, url };
+            }
+
+            if (response.statusCode === 404) {
+                log.warning('API responded with 404 for request.', { url });
+                return { data: null, url };
+            }
+
+            if (response.statusCode === 429) {
+                const wait = 1000 * (attempt + 1);
+                log.warning('API rate limit encountered. Retrying after delay.', { url, attempt, wait });
+                await sleep(wait);
+                continue;
+            }
+
+            if (response.statusCode >= 500) {
+                const wait = 800 * (attempt + 1);
+                log.warning('Server error from API. Retrying.', { url, statusCode: response.statusCode, attempt });
+                await sleep(wait);
+                continue;
+            }
+
+            log.warning('Unexpected API status code.', { url, statusCode: response.statusCode });
+            return { data: null, url };
+        } catch (err) {
+            lastError = err;
+            const wait = 600 * (attempt + 1);
+            log.debug('API request attempt failed, will retry.', { url, attempt, error: err.message, wait });
+            await sleep(wait);
+        }
+    }
+    throw lastError || new Error('API request failed without specific error.');
+}
+
+async function fetchJobDetail(jobId, options) {
+    const url = `${API_BASE_URL}/${jobId}`;
+    let lastError;
+    for (let attempt = 0; attempt <= options.detailRetries; attempt++) {
+        try {
+            const proxyUrl = options.proxyConfiguration ? await options.proxyConfiguration.newUrl() : undefined;
+            const response = await gotScraping({
+                url,
+                proxyUrl,
+                headers: buildApiHeaders(options.userAgent, options.cookieHeader),
+                timeout: { request: Math.max(10000, Math.floor(options.timeoutMillis / 2)) },
+                responseType: 'json',
+                throwHttpErrors: false
+            });
+            if (response.statusCode === 200) {
+                return response.body;
+            }
+            if (response.statusCode >= 400 && response.statusCode < 500) {
+                log.debug('Detail API returned client error.', { url, statusCode: response.statusCode });
+                return null;
+            }
+        } catch (err) {
+            lastError = err;
+            const wait = 500 * (attempt + 1);
+            await sleep(wait);
+        }
+    }
+    if (lastError) {
+        log.debug('Failed to fetch job detail after retries.', { jobId, error: lastError.message });
+    }
+    return null;
+}
+
+function passesDateFilter(dateStr, filter) {
+    if (!filter) return true;
+    if (!dateStr) return false;
+    const posted = new Date(dateStr);
+    if (Number.isNaN(posted.getTime())) return false;
+    if (filter.type === 'range') {
+        const diff = (Date.now() - posted.getTime()) / (1000 * 60 * 60 * 24);
+        return diff <= filter.days;
+    }
+    if (filter.type === 'since') {
+        return posted >= filter.since;
+    }
+    return true;
+}
+
+function formatJob(job, detail) {
+    const source = detail && detail.id ? detail : job;
+    const html = (detail && detail.contents) || job.contents || null;
+    return {
+        source: 'api',
+        job_id: source.id ?? null,
+        slug: source.short_name ?? null,
+        title: source.name ?? null,
+        company: source.company?.name ?? null,
+        company_id: source.company?.id ?? null,
+        company_short_name: source.company?.short_name ?? null,
+        locations: normalizeArray(source.locations).map(loc => loc.name).filter(Boolean),
+        location: normalizeArray(source.locations).map(loc => loc.name).filter(Boolean).join(', ') || null,
+        categories: normalizeArray(source.categories).map(cat => cat.name ?? cat).filter(Boolean),
+        levels: normalizeArray(source.levels).map(level => level.name ?? level).filter(Boolean),
+        tags: normalizeArray(source.tags).map(tag => tag.name ?? tag).filter(Boolean),
+        job_type: source.type ?? null,
+        publication_date: source.publication_date ?? null,
+        landing_page: source.refs?.landing_page ?? null,
+        url: source.refs?.landing_page ?? null,
+        api_url: `${API_BASE_URL}/${source.id}`,
+        description_html: html ?? null,
+        description_text: html ? htmlToText(html) : null,
+        raw: source
+    };
+}
+
+function normalizeArray(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    return [value];
+}
+
+function htmlToText(html) {
+    if (!html) return null;
+    try {
+        const $ = load(`<div>${html}</div>`);
+        const text = $('div').text().replace(/\s+/g, ' ').trim();
+        return text || null;
+    } catch {
+        return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || null;
+    }
+}
+
+function buildApiHeaders(userAgent, cookieHeader) {
+    const headers = {
+        'user-agent': userAgent,
+        'accept': 'application/json, text/javascript, */*; q=0.01',
+        'accept-language': 'en-US,en;q=0.9',
+        'referer': 'https://www.themuse.com/',
+        'origin': 'https://www.themuse.com',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-dest': 'empty'
+    };
+    const hints = buildClientHintsFromUA(userAgent);
+    headers['sec-ch-ua'] = hints['sec-ch-ua'];
+    headers['sec-ch-ua-mobile'] = hints['sec-ch-ua-mobile'];
+    headers['sec-ch-ua-platform'] = hints['sec-ch-ua-platform'];
+    if (cookieHeader) headers.cookie = cookieHeader;
+    return headers;
+}
+
+function buildCookieHeader(cookies, cookiesJson) {
+    if (typeof cookies === 'string' && cookies.trim()) return cookies.trim();
+    if (!cookiesJson) return null;
+    try {
+        const parsed = typeof cookiesJson === 'string' ? JSON.parse(cookiesJson) : cookiesJson;
+        if (Array.isArray(parsed)) {
+            return parsed.map(c => `${c.name}=${c.value}`).join('; ');
+        }
+        if (parsed && typeof parsed === 'object') {
+            return Object.entries(parsed).map(([k, v]) => `${k}=${v}`).join('; ');
+        }
+    } catch (err) {
+        log.warning('Unable to parse cookiesJson into header.', { error: err.message });
+    }
+    return null;
+}
+
 function buildClientHintsFromUA(ua) {
-    // Very small heuristic-based builder to keep sec-ch-ua values consistent with UA
     const hints = {
-        'sec-ch-ua': '"Chromium";v="120", "Google Chrome";v="120", ";Not A Brand";v="99"',
+        'sec-ch-ua': '"Chromium";v="123", "Google Chrome";v="123", ";Not A Brand";v="99"',
         'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
+        'sec-ch-ua-platform': '"Windows"'
     };
     if (/Macintosh|Mac OS X/i.test(ua)) {
         hints['sec-ch-ua-platform'] = '"macOS"';
         hints['sec-ch-ua'] = '"Not A(Brand)";v="99", "Safari";v="16"';
-    } else if (/Linux/i.test(ua)) {
+    } else if (/Linux|Ubuntu/i.test(ua)) {
         hints['sec-ch-ua-platform'] = '"Linux"';
     } else if (/Android/i.test(ua) || /Mobile/i.test(ua)) {
         hints['sec-ch-ua-mobile'] = '?1';
+        hints['sec-ch-ua-platform'] = '"Android"';
     }
     return hints;
 }
 
 function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function randomInt(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
+    const floorMin = Math.ceil(min);
+    const floorMax = Math.floor(max);
+    return Math.floor(Math.random() * (floorMax - floorMin + 1)) + floorMin;
 }
 
 function pickUserAgent(provided) {
-    if (provided) return provided;
+    if (provided && typeof provided === 'string') return provided;
     return DEFAULT_USER_AGENTS[randomInt(0, DEFAULT_USER_AGENTS.length - 1)];
 }
-
-// Early startup log so container shows activity immediately
-console.log('Starting TheMuse actor - initializing...');
-try {
-    await Actor.init();
-} catch (e) {
-    console.error('Actor.init() failed to initialize:', e && e.message ? e.message : e);
-    // Give the error a moment to flush to logs before exiting
-    try { await sleep(250); } catch (err) {}
-    process.exit(1);
-}
-
-async function main() {
-    try {
-        const actorInput = (await Actor.getInput()) || {};
-
-        // Respect CLI/ENV but prefer Actor input
-        const argv = process.argv.slice(2);
-        const cli = {};
-        for (let i = 0; i < argv.length; i++) {
-            const a = argv[i];
-            if (a.startsWith('--')) {
-                const k = a.replace(/^--/, '');
-                const v = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : true;
-                cli[k] = v;
-            }
-        }
-
-        const input = {
-            // HTML listing options
-            startUrl: process.env.START_URL || cli.startUrl || actorInput.startUrl || undefined,
-            startUrls: actorInput.startUrls || (cli.startUrls ? (Array.isArray(cli.startUrls) ? cli.startUrls : String(cli.startUrls).split(',')) : undefined),
-            keyword: process.env.KEYWORD || cli.keyword || actorInput.keyword || undefined,
-            location: process.env.LOCATION || cli.location || actorInput.location || undefined,
-            datePosted: process.env.DATE_POSTED || cli.datePosted || actorInput.datePosted || undefined,
-            // common options
-            collectDetails: (process.env.COLLECT_DETAILS || typeof cli.collectDetails !== 'undefined' ? (process.env.COLLECT_DETAILS === 'true' || cli.collectDetails === 'true' || cli.collectDetails === true) : (typeof actorInput.collectDetails === 'boolean' ? actorInput.collectDetails : true)),
-            maxItems: Number(process.env.MAX_ITEMS || cli.maxItems || actorInput.maxItems || 100),
-            maxPages: Number(process.env.MAX_PAGES || cli.maxPages || actorInput.maxPages || 20), // default 20 pages
-            proxyConfiguration: actorInput.proxyConfiguration || undefined,
-            htmlFallback: (process.env.HTML_FALLBACK || cli.htmlFallback || actorInput.htmlFallback) || false,
-            dedupe: (typeof actorInput.dedupe !== 'undefined' ? actorInput.dedupe : (typeof cli.dedupe !== 'undefined' ? cli.dedupe : true)),
-            cookies: process.env.COOKIES || cli.cookies || actorInput.cookies || undefined,
-            cookiesJson: process.env.COOKIES_JSON || cli.cookiesJson || actorInput.cookiesJson || undefined,
-        };
-
-        // Provide simple CLI help and dry-run
-        if (cli.help || cli.h) {
-            console.log('Usage: node src/main.js [--category "Software Engineering"] [--maxItems 200] [--maxPages 0] [--concurrency 2] [--htmlFallback true]');
-            console.log('You can also set environment variables (CATEGORY, MAX_ITEMS, MAX_PAGES, CONCURRENCY, HTML_FALLBACK).');
-            await Actor.exit();
-            return;
-        }
-
-        if (cli['dry-run']) {
-            console.log('Dry run - resolved input:');
-            console.log(JSON.stringify(input, null, 2));
-            await Actor.exit();
-            return;
-        }
-
-        const userAgent = pickUserAgent(input.userAgent);
-        const proxyConf = input.proxyConfiguration ? await Actor.createProxyConfiguration({ ...input.proxyConfiguration }) : undefined;
-
-        // Hardcoded stealth settings for optimal anti-blocking
-        const CONCURRENCY = 2;
-        const MIN_DELAY_MS = 300;
-        const MAX_DELAY_MS = 700;
-
-        let itemCount = 0;
-        let totalRequests = 0;
-        const seenUrls = input.dedupe ? new Set() : null;
-
-        log.info('Starting TheMuse scraper', { 
-            keyword: input.keyword,
-            startUrl: input.startUrl,
-            maxItems: input.maxItems, 
-            maxPages: input.maxPages,
-            collectDetails: input.collectDetails
-        });
-
-        const httpCrawler = new HttpCrawler({
-            proxyConfiguration: proxyConf,
-            maxRequestRetries: 6,
-            useSessionPool: true,
-            maxConcurrency: CONCURRENCY,
-            requestHandlerTimeoutSecs: 90,
-            async requestHandler({ request, response, body, enqueueLinks, log: crawlerLog, session, responseBody }) {
-                // Respect item limit (treat maxItems === 0 as unlimited)
-                if (input.maxItems > 0 && itemCount >= input.maxItems) {
-                    crawlerLog.info('Reached maxItems limit; skipping request', { url: request.url });
-                    return;
-                }
-
-                // polite delay with jitter + human-like reading time + simulated network latency
-                const baseDelay = randomInt(MIN_DELAY_MS, MAX_DELAY_MS);
-                const networkLatency = randomInt(20, 180); // simulate small network latency
-
-                totalRequests++;
-
-                // handle response status
-                const status = response && response.statusCode ? response.statusCode : null;
-                if (status && (status === 429 || status >= 500)) {
-                    // Let the crawler's retry mechanism handle it; log and bail for this run
-                    crawlerLog.warning('Server returned error status; letting retry handle it', { status, url: request.url });
-                    throw new Error(`Bad status ${status}`);
-                }
-
-                // additional small random session rotation to avoid long-lived sessions
-                try {
-                    if (session && Math.random() < 0.12 && typeof session.retire === 'function') {
-                        crawlerLog.info('Occasionally retiring session to rotate', { sessionId: session.id });
-                        // retire so session pool hands out a new one next time
-                        session.retire();
-                    }
-                } catch (e) {
-                    crawlerLog.debug('Session retire attempt failed', { error: e.message });
-                }
-
-                let data;
-                try {
-                    data = JSON.parse(body.toString());
-                } catch (e) {
-                    crawlerLog.error('Failed to parse JSON response', { url: request.url, error: e.message });
-                    return;
-                }
-
-                const jobs = data.results || [];
-                const currentPage = data.page || Number(new URL(request.url).searchParams.get('page')) || 1;
-                crawlerLog.info(`Page ${currentPage} returned ${jobs.length} jobs`);
-
-                // simulate reading time proportional to number of jobs + base/network delay
-                const readTime = randomInt(600, 1800) + (jobs.length * randomInt(30, 80));
-                const totalPreProcessDelay = baseDelay + networkLatency + readTime;
-                crawlerLog.debug('Sleeping to simulate human reading and latency', { ms: totalPreProcessDelay });
-                await sleep(totalPreProcessDelay);
-
-                if (!jobs || jobs.length === 0) {
-                    crawlerLog.info('No jobs on this page. Stopping pagination for this variant.');
-                    return;
-                }
-
-                for (const job of jobs) {
-                    if (input.maxItems > 0 && itemCount >= input.maxItems) break;
-                    const out = {
-                        id: job.id,
-                        title: job.name,
-                        company: job.company && job.company.name,
-                        location: (job.locations || []).map(l => l.name).join(', '),
-                        date_posted: job.publication_date,
-                        job_type: job.type,
-                        job_category: (job.categories || []).map(c => c.name).join(', '),
-                        job_url: job.refs && job.refs.landing_page,
-                        // also include `url` for dataset schema compatibility
-                        url: job.refs && job.refs.landing_page,
-                        description_html: job.contents,
-                        raw: job,
-                    };
-                    await Dataset.pushData(out);
-                    itemCount++;
-                }
-
-                // Paginate (respect maxItems; maxItems === 0 means unlimited)
-                if ((input.maxPages === 0 || currentPage < input.maxPages) && (input.maxItems === 0 || itemCount < input.maxItems) && jobs.length > 0) {
-                    const nextPage = currentPage + 1;
-                    const nextUrl = new URL(request.url);
-                    nextUrl.searchParams.set('page', String(nextPage));
-                    await httpCrawler.addRequests([{ url: nextUrl.href }]);
-                }
-            },
-            async failedRequestHandler({ request, log: crawlerLog }) {
-                crawlerLog.error(`Request ${request.url} failed too many times.`);
-            },
-            prepareRequestFunction: ({ request, session }) => {
-                request.headers = request.headers || {};
-                // Ensure no DNT header and no obvious bot headers
-                delete request.headers['dnt'];
-                // User-Agent and accept
-                request.headers['user-agent'] = userAgent;
-                request.headers['accept'] = 'application/json, text/javascript, */*; q=0.01';
-                request.headers['accept-language'] = 'en-US,en;q=0.9';
-
-                // Build client hints consistent with UA
-                const ch = buildClientHintsFromUA(userAgent);
-                request.headers['sec-ch-ua'] = ch['sec-ch-ua'];
-                request.headers['sec-ch-ua-mobile'] = ch['sec-ch-ua-mobile'];
-                request.headers['sec-ch-ua-platform'] = ch['sec-ch-ua-platform'];
-
-                // realistic referer chain: if session has lastUrl, use it; otherwise a plausible search listing origin
-                try {
-                    const variant = request.userData && request.userData.variant ? request.userData.variant : null;
-                    const refererBase = variant ? `https://www.themuse.com/search/category/${encodeURIComponent(variant.replace(/\s+/g, '_'))}` : 'https://www.themuse.com/';
-                    // if session remembers lastUrl, use it; else use base listing
-                    if (session && session.id && session.userData && session.userData.lastUrl) {
-                        request.headers['referer'] = session.userData.lastUrl;
-                    } else {
-                        request.headers['referer'] = `${refererBase}?utm_source=browser`;
-                    }
-                    // store current intended url as next referer for this session
-                    if (session) {
-                        session.userData = session.userData || {};
-                        session.userData.lastUrl = request.url;
-                    }
-                } catch (e) {
-                    // ignore referer setting errors
-                }
-
-                // Some sites expect a realistic connection header; do not add suspicious headers like DNT
-                request.headers['sec-fetch-site'] = 'same-origin';
-                request.headers['sec-fetch-mode'] = 'navigate';
-                request.headers['sec-fetch-user'] = '?1';
-                request.headers['sec-fetch-dest'] = 'document';
-
-                return request;
-            },
-        });
-
-        // Build start URLs: check for explicit startUrl, or construct from keyword/location/datePosted
-        let rawStartUrls = actorInput.startUrls || cli.startUrls || process.env.START_URLS || null;
-
-        // Support single startUrl
-        if (!rawStartUrls && (input.startUrl || actorInput.startUrl)) {
-            rawStartUrls = input.startUrl || actorInput.startUrl;
-        }
-
-        // If no explicit URL, construct one from keyword/location/datePosted
-        if (!rawStartUrls && (input.keyword || input.location || input.datePosted)) {
-            const parts = ['https://www.themuse.com/search'];
-            if (input.keyword) parts.push('keyword', encodeURIComponent(input.keyword.trim().replace(/\s+/g, '-').toLowerCase()));
-            if (input.location) parts.push('location', encodeURIComponent(input.location.trim().replace(/\s+/g, '-').toLowerCase()));
-            if (input.datePosted) parts.push('date-posted', encodeURIComponent(input.datePosted));
-            const constructedUrl = parts.join('/');
-            rawStartUrls = constructedUrl;
-            log.info('Constructed search URL from keyword/location/datePosted', { url: constructedUrl });
-        }
-
-        let explicitStartUrls = [];
-        if (rawStartUrls) {
-            if (Array.isArray(rawStartUrls)) explicitStartUrls = rawStartUrls;
-            else if (typeof rawStartUrls === 'string') {
-                // allow comma-separated list
-                explicitStartUrls = rawStartUrls.split(',').map(s => s.trim()).filter(Boolean);
-            }
-        }
-
-        // If we have explicit URLs (either provided or constructed from keyword/location), use CheerioCrawler
-        if (explicitStartUrls.length > 0) {
-            log.info('Using CheerioCrawler for URL-based scraping', { count: explicitStartUrls.length, urls: explicitStartUrls });
-            // Prepare cookies header if provided
-            let cookieHeader = null;
-            if (input.cookies) cookieHeader = input.cookies;
-            else if (input.cookiesJson) {
-                try {
-                    const cj = JSON.parse(input.cookiesJson);
-                    if (Array.isArray(cj)) {
-                        cookieHeader = cj.map(c => `${c.name}=${c.value}`).join('; ');
-                    } else if (typeof cj === 'object') {
-                        cookieHeader = Object.entries(cj).map(([k, v]) => `${k}=${v}`).join('; ');
-                    }
-                } catch (e) {
-                    log.warning('cookiesJson could not be parsed as JSON; ignoring', { err: e.message });
-                }
-            }
-
-            // If collectDetails is enabled, create a detail crawler to fetch job pages
-            let detailCrawler = null;
-            if (input.collectDetails) {
-                detailCrawler = new CheerioCrawler({
-                    proxyConfiguration: proxyConf,
-                    maxConcurrency: 1, // Lower for detail pages
-                    requestHandlerTimeoutSecs: 60,
-                    async requestHandler({ request, $, log: dLog }) {
-                        try {
-                            // Try JSON-LD on detail page first
-                            const scriptEls = $('script[type="application/ld+json"]').toArray();
-                            let pushed = false;
-                            for (const el of scriptEls) {
-                                try {
-                                    const json = JSON.parse($(el).text());
-                                    const items = Array.isArray(json) ? json : [json];
-                                    for (const it of items) {
-                                        if (!it) continue;
-                                        if (it['@type'] === 'JobPosting' || (it['@type'] && it['@type'].toLowerCase().includes('job'))) {
-                                            const out = {
-                                                id: it.identifier || it.url || request.url,
-                                                title: it.title || it.name || $('h1').first().text().trim() || null,
-                                                company: it.hiringOrganization && (it.hiringOrganization.name || null) || null,
-                                                location: Array.isArray(it.jobLocation) ? it.jobLocation.map(l => l.address && l.address.addressLocality).filter(Boolean).join(', ') : (it.jobLocation && it.jobLocation.address && it.jobLocation.address.addressLocality) || null,
-                                                date_posted: it.datePosted || it.postedAt || null,
-                                                job_type: it.employmentType || null,
-                                                job_category: null,
-                                                job_url: it.url || it.sameAs || request.url,
-                                                url: it.url || it.sameAs || request.url,
-                                                description_html: it.description || $('article').html() || null,
-                                                raw: it
-                                            };
-                                            if (!seenUrls || !seenUrls.has(out.url)) {
-                                                await Dataset.pushData(out);
-                                                if (seenUrls) seenUrls.add(out.url);
-                                            }
-                                            pushed = true;
-                                            itemCount++;
-                                            if (input.maxItems > 0 && itemCount >= input.maxItems) return;
-                                        }
-                                    }
-                                } catch (e) {
-                                    // ignore parse errors of json-ld
-                                }
-                            }
-
-                            if (!pushed) {
-                                // fallback parsing
-                                const out = {
-                                    id: request.url,
-                                    title: $('h1').first().text().trim() || null,
-                                    company: $('meta[name="author"]').attr('content') || null,
-                                    location: null,
-                                    date_posted: null,
-                                    job_type: null,
-                                    job_category: null,
-                                    job_url: request.url,
-                                    url: request.url,
-                                    description_html: $('article').html() || $('body').text().slice(0, 2000) || null,
-                                    raw: null
-                                };
-                                if (!seenUrls || !seenUrls.has(out.url)) {
-                                    await Dataset.pushData(out);
-                                    if (seenUrls) seenUrls.add(out.url);
-                                }
-                                itemCount++;
-                            }
-                        } catch (e) {
-                            dLog.error('Detail page parse failed', { url: request.url, error: e.message });
-                        }
-                    },
-                    prepareRequestFunction: ({ request }) => {
-                        request.headers = request.headers || {};
-                        request.headers['user-agent'] = userAgent;
-                        if (cookieHeader) request.headers['cookie'] = cookieHeader;
-                        return request;
-                    }
-                });
-            }
-
-            const cheerioListingCrawler = new CheerioCrawler({
-                proxyConfiguration: proxyConf,
-                maxConcurrency: CONCURRENCY,
-                requestHandlerTimeoutSecs: 90,
-                async requestHandler({ request, $, response, log: cLog, session }) {
-                    // Respect item limit
-                    if (input.maxItems > 0 && itemCount >= input.maxItems) return;
-
-                    cLog.info('Processing HTML listing', { url: request.url });
-
-                    // Try JSON-LD first
-                    const pushed = new Set();
-                    try {
-                        const scriptEls = $('script[type="application/ld+json"]').toArray();
-                        for (const el of scriptEls) {
-                            if (input.maxItems > 0 && itemCount >= input.maxItems) break;
-                            try {
-                                const json = JSON.parse($(el).text());
-                                const items = Array.isArray(json) ? json : [json];
-                                for (const it of items) {
-                                    if (!it) continue;
-                                    if (it['@type'] === 'JobPosting' || (it['@type'] && it['@type'].toLowerCase().includes('job'))) {
-                                        const out = {
-                                            id: it.identifier || it.url || null,
-                                            title: it.title || it.name || null,
-                                            company: it.hiringOrganization && (it.hiringOrganization.name || it.hiringOrganization['@id']) || null,
-                                            location: Array.isArray(it.jobLocation) ? it.jobLocation.map(l => l.address && l.address.addressLocality).filter(Boolean).join(', ') : (it.jobLocation && it.jobLocation.address && it.jobLocation.address.addressLocality) || null,
-                                            date_posted: it.datePosted || it.postedAt || null,
-                                            job_type: it.employmentType || null,
-                                            job_category: null,
-                                            job_url: it.url || it.sameAs || request.url,
-                                            url: it.url || it.sameAs || request.url,
-                                            description_html: it.description || null,
-                                            raw: it
-                                        };
-                                        const key = out.job_url || out.id || out.title;
-                                        if (!pushed.has(key)) {
-                                            await Dataset.pushData(out);
-                                            pushed.add(key);
-                                            itemCount++;
-                                            if (input.maxItems > 0 && itemCount >= input.maxItems) break;
-                                        }
-                                    }
-                                }
-                            } catch (e) {
-                                // ignore malformed json-ld blocks
-                            }
-                        }
-                    } catch (e) {
-                        cLog.debug('Error while parsing JSON-LD', { error: e.message });
-                    }
-
-                    // If JSON-LD produced results, we may still want to look for links to job detail pages
-                    // Generic anchor-based extraction as fallback
-                    if (input.maxItems === 0 || itemCount < input.maxItems) {
-                        const anchors = [];
-                        $('a[href]').each((i, el) => {
-                            if (input.maxItems > 0 && itemCount >= input.maxItems) return;
-                            const href = $(el).attr('href');
-                            if (!href) return;
-                            // candidate job links
-                            if (/\/jobs?\//i.test(href) || /\/job\//i.test(href) || /themuse\.com\/jobs\//i.test(href)) {
-                                anchors.push({ href: href, text: $(el).text().trim() });
-                            }
-                        });
-
-                        for (const a of anchors) {
-                            if (input.maxItems > 0 && itemCount >= input.maxItems) break;
-                            try {
-                                const abs = new URL(a.href, request.loadedUrl || request.url).href;
-                                // Avoid duplicates
-                                if (seenUrls && seenUrls.has(abs)) continue;
-                                if (input.collectDetails && detailCrawler) {
-                                    // enqueue detail request
-                                    await detailCrawler.addRequests([{ url: abs }]);
-                                } else {
-                                    const out = {
-                                        id: abs,
-                                        title: a.text || null,
-                                        company: null,
-                                        location: null,
-                                        date_posted: null,
-                                        job_type: null,
-                                        job_category: null,
-                                        job_url: abs,
-                                        url: abs,
-                                        description_html: null,
-                                        raw: null
-                                    };
-                                    if (!seenUrls || !seenUrls.has(out.url)) {
-                                        await Dataset.pushData(out);
-                                        if (seenUrls) seenUrls.add(out.url);
-                                    }
-                                    itemCount++;
-                                }
-                            } catch (e) {
-                                // ignore malformed urls
-                            }
-                        }
-                    }
-
-                    // Pagination: try rel=next, .next, aria-label next
-                    if ((input.maxPages === 0 || (request.userData && (request.userData.page || 1) < input.maxPages)) && (input.maxItems === 0 || itemCount < input.maxItems)) {
-                        let nextHref = null;
-                        try {
-                            const relNext = $('a[rel="next"]').attr('href');
-                            if (relNext) nextHref = relNext;
-                            if (!nextHref) {
-                                const selNext = $('a.next, a[aria-label*="Next"], a[title*="Next"]').first().attr('href');
-                                if (selNext) nextHref = selNext;
-                            }
-                        } catch (e) {
-                            // ignore
-                        }
-
-                        if (nextHref) {
-                            try {
-                                const absNext = new URL(nextHref, request.loadedUrl || request.url).href;
-                                await cheerioListingCrawler.addRequests([{ url: absNext, userData: { page: (request.userData && request.userData.page ? request.userData.page + 1 : 2) } }]);
-                            } catch (e) {
-                                // ignore
-                            }
-                        } else {
-                            // As a fallback, if URL contains page=N, increment it
-                            try {
-                                const cur = new URL(request.url);
-                                const curPage = Number(cur.searchParams.get('page')) || 1;
-                                if (input.maxPages === 0 || curPage < input.maxPages) {
-                                    cur.searchParams.set('page', String(curPage + 1));
-                                    await cheerioListingCrawler.addRequests([{ url: cur.href, userData: { page: curPage + 1 } }]);
-                                }
-                            } catch (e) {
-                                // ignore
-                            }
-                        }
-                    }
-                },
-                prepareRequestFunction: ({ request, session }) => {
-                    request.headers = request.headers || {};
-                    request.headers['user-agent'] = userAgent;
-                    request.headers['accept-language'] = 'en-US,en;q=0.9';
-                    const ch = buildClientHintsFromUA(userAgent);
-                    request.headers['sec-ch-ua'] = ch['sec-ch-ua'];
-                    request.headers['sec-ch-ua-mobile'] = ch['sec-ch-ua-mobile'];
-                    request.headers['sec-ch-ua-platform'] = ch['sec-ch-ua-platform'];
-                    if (cookieHeader) request.headers['cookie'] = cookieHeader;
-                    return request;
-                }
-            });
-
-            const startRequests = explicitStartUrls.map(u => ({ url: u }));
-            await cheerioListingCrawler.run(startRequests);
-
-            // If collectDetails is enabled and we have a detailCrawler, run it now
-            if (input.collectDetails && detailCrawler) {
-                log.info('Running detail crawler to fetch full job pages', { pending: detailCrawler.requestQueue ? 'many' : 'unknown' });
-                await detailCrawler.run();
-            }
-
-            log.info('Finished URL-based crawl', { saved: itemCount });
-            // done
-            await Actor.exit();
-            return;
-        }
-
-        // No URLs provided - default to API crawler for recent jobs
-        log.info('No URLs provided, fetching recent jobs from TheMuse API');
-        const startRequests = [];
-        const u = new URL(API_BASE_URL);
-        u.searchParams.set('page', '1');
-        startRequests.push({ url: u.href, userData: { variant: 'recent' } });
-
-        // Run the HTTP crawler only if we have requests
-        if (startRequests.length > 0) {
-            await httpCrawler.run(startRequests);
-        } else {
-            log.warning('No start requests generated, nothing to scrape');
-        }
-
-        // If no items saved and htmlFallback requested, try CheerioCrawler on the HTML pages as fallback
-        if (itemCount === 0 && input.htmlFallback) {
-            log.info('No items from API; attempting HTML fallback using CheerioCrawler');
-            const cheerioCrawler = new CheerioCrawler({
-                proxyConfiguration: proxyConf,
-                maxConcurrency: 1,
-                requestHandlerTimeoutSecs: 60,
-                async requestHandler({ request, $, log: cLog }) {
-                    // Basic heuristic parsing: look for anchors linking to job landing pages
-                    const links = [];
-                    $('a[href]').each((i, el) => {
-                        const href = $(el).attr('href');
-                        if (!href) return;
-                        // The Muse job pages often include '/jobs/' or '/job/' in URL; filter by that
-                        if (/\/jobs?\//i.test(href)) {
-                            links.push({ href: new URL(href, request.loadedUrl || request.url).href, text: $(el).text().trim() });
-                        }
-                    });
-
-                    cLog.info(`Found ${links.length} candidate job links on ${request.url}`);
-                    for (const ln of links) {
-                        await Dataset.pushData({ source: 'html_fallback', title: ln.text, url: ln.href });
-                        itemCount++;
-                        if (itemCount >= input.maxItems) break;
-                    }
-                },
-                prepareRequestFunction: ({ request }) => {
-                    request.headers = request.headers || {};
-                    request.headers['user-agent'] = userAgent;
-                    return request;
-                }
-            });
-
-            // generate HTML listing pages
-            const htmlStartRequests = [];
-            const fallbackVariants = ['Software Engineering', 'Data Science', 'Product Management', 'Marketing', 'Design'];
-            for (const v of fallbackVariants) {
-                const base = `https://www.themuse.com/search/category/${encodeURIComponent(v.replace(/\s+/g, '_'))}`;
-                htmlStartRequests.push({ url: `${base}?page=1` });
-            }
-
-            await cheerioCrawler.run(htmlStartRequests);
-        }
-
-        log.info('Crawl finished', { total_saved: itemCount, total_requests: totalRequests });
-    } finally {
-        await Actor.exit();
-    }
-}
-
-// Run and handle unexpected errors
-main().catch(err => {
-    log.error('An unexpected error occurred during the crawl.', { message: err.message, stack: err.stack });
-    process.exit(1);
-});
