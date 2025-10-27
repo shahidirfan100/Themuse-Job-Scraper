@@ -1,6 +1,6 @@
 {
   "title": "TheMuse.com Jobs Scraper",
-  "description": "Scrape jobs from TheMuse.com. Provide either a search URL OR keyword/location/category filters. Actor scrapes via public API (preferred) or HTML parsing, with optional job detail collection.",
+  "description": "Scrape jobs from TheMuse.com. Provide a start URL for specific searches, or use keyword/location/date filters to construct search URLs. With no inputs, it automatically scrapes recent jobs.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
@@ -12,9 +12,9 @@
       "prefill": ""
     },
     "keyword": {
-      "title": "Keyword (if not using Start URL)",
+      "title": "Keyword (constructs search URL)",
       "type": "string",
-      "description": "Job search keyword (e.g., 'admin', 'software engineer'). Used to construct a search URL if startUrl is not provided.",
+      "description": "Job search keyword (e.g., 'software engineer', 'marketing'). Used to construct a search URL when startUrl is not provided.",
       "editor": "textfield",
       "prefill": ""
     },
@@ -23,13 +23,6 @@
       "type": "string",
       "description": "Location filter for constructing search URLs (e.g., 'New York', 'Remote'). Leave empty for all locations.",
       "editor": "textfield"
-    },
-    "category": {
-      "title": "Category (API fallback)",
-      "type": "string",
-      "description": "Job category for API-based scraping when startUrl/keyword are not provided (e.g., 'Software Engineering', 'Account Management').",
-      "editor": "textfield",
-      "default": "Software Engineering"
     },
     "datePosted": {
       "title": "Date posted filter",

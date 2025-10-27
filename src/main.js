@@ -263,12 +263,12 @@ async function main() {
 
         // Build start URLs: check for explicit startUrl, or construct from keyword/location/datePosted
         let rawStartUrls = actorInput.startUrls || cli.startUrls || process.env.START_URLS || null;
-        
+
         // Support single startUrl
         if (!rawStartUrls && (input.startUrl || actorInput.startUrl)) {
             rawStartUrls = input.startUrl || actorInput.startUrl;
         }
-        
+
         // If no explicit URL, construct one from keyword/location/datePosted
         if (!rawStartUrls && (input.keyword || input.location || input.datePosted)) {
             const parts = ['https://www.themuse.com/search'];
@@ -279,7 +279,7 @@ async function main() {
             rawStartUrls = constructedUrl;
             log.info('Constructed search URL from keyword/location/datePosted', { url: constructedUrl });
         }
-        
+
         let explicitStartUrls = [];
         if (rawStartUrls) {
             if (Array.isArray(rawStartUrls)) explicitStartUrls = rawStartUrls;
@@ -289,8 +289,9 @@ async function main() {
             }
         }
 
+        // If we have explicit URLs (either provided or constructed from keyword/location), use CheerioCrawler
         if (explicitStartUrls.length > 0) {
-            log.info('Start URLs provided; running CheerioCrawler on explicit URLs', { count: explicitStartUrls.length });
+            log.info('Using CheerioCrawler for URL-based scraping', { count: explicitStartUrls.length, urls: explicitStartUrls });
             // Prepare cookies header if provided
             let cookieHeader = null;
             if (input.cookies) cookieHeader = input.cookies;
@@ -539,21 +540,21 @@ async function main() {
 
             const startRequests = explicitStartUrls.map(u => ({ url: u }));
             await cheerioListingCrawler.run(startRequests);
-            
+
             // If collectDetails is enabled and we have a detailCrawler, run it now
             if (input.collectDetails && detailCrawler) {
                 log.info('Running detail crawler to fetch full job pages', { pending: detailCrawler.requestQueue ? 'many' : 'unknown' });
                 await detailCrawler.run();
             }
-            
-            log.info('Finished explicit HTML crawl', { saved: itemCount });
+
+            log.info('Finished URL-based crawl', { saved: itemCount });
             // done
             await Actor.exit();
             return;
         }
 
-        // Always fetch recent jobs from API (no category filtering)
-        log.info('Fetching recent jobs from TheMuse API');
+        // No URLs provided - default to API crawler for recent jobs
+        log.info('No URLs provided, fetching recent jobs from TheMuse API');
         const startRequests = [];
         const u = new URL(API_BASE_URL);
         u.searchParams.set('page', '1');
