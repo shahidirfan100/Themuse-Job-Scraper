@@ -16,7 +16,7 @@
       "type": "string",
       "description": "Job search keyword (e.g., 'software engineer', 'marketing'). Used to construct a search URL when startUrl is not provided.",
       "editor": "textfield",
-      "prefill": ""
+      "prefill": "software engineer"
     },
     "category": {
       "title": "Category filter",
@@ -28,7 +28,8 @@
       "title": "Location (optional)",
       "type": "string",
       "description": "Location filter for constructing search URLs (e.g., 'New York', 'Remote'). Leave empty for all locations.",
-      "editor": "textfield"
+      "editor": "textfield",
+      "prefill": "Toronto"
     },
     "datePosted": {
       "title": "Date posted filter",
@@ -51,7 +52,7 @@
       "type": "integer",
       "description": "Maximum number of jobs to collect. Set to 0 for unlimited (scrape until no more results).",
       "minimum": 0,
-      "default": 100,
+      "default": 1,
       "editor": "number"
     },
     "maxPages": {
@@ -59,7 +60,7 @@
       "type": "integer",
       "description": "Safety cap on pagination. Set to 0 to paginate until empty or maxItems is reached.",
       "minimum": 0,
-      "default": 20,
+      "default": 1,
       "editor": "number"
     },
     "dedupe": {
